@@ -1,16 +1,37 @@
+"""
+Yad2 Real Estate Monitor - Enhanced Version
+Features:
+- SQLite persistent storage
+- Price history tracking
+- Proxy rotation
+- Market analytics
+- Web dashboard with REST API
+- Telegram notifications with filters
+- Daily summaries
+- Smart pagination
+- Adaptive delay management
+"""
 import requests
 from bs4 import BeautifulSoup
 import time
 import json
 import os
-from datetime import datetime, timedelta
-import hashlib
-import random
-from typing import Dict, List, Optional, Tuple
 import re
+import random
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor
 
+# Import our modules
+from database import Database
+from proxy_manager import ProxyManager, ProxyRotator
+from analytics import MarketAnalytics
+from notifications import NotificationManager
+from web import create_web_app, run_web_server
+
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -25,274 +46,142 @@ logger = logging.getLogger(__name__)
 class AdaptiveDelayManager:
     """Analyzes historical scraping data and adapts delays to avoid blocks."""
 
-    def __init__(self, history_file: str = "scrape_history.json"):
-        self.history_file = history_file
-        self.history = self.load_history()
+    def __init__(self, database: Database):
+        self.db = database
         self.base_page_delay = (5, 15)
         self.base_cycle_delay = (60, 90)
         self.current_multiplier = 1.0
-        self.analyze_and_adapt()
+        self._load_strategy()
 
-    def load_history(self) -> Dict:
-        if os.path.exists(self.history_file):
-            try:
-                with open(self.history_file, 'r') as f:
-                    return json.load(f)
-            except Exception as e:
-                logger.error(f"Error loading scrape history: {e}")
-        return {
-            "events": [],
-            "daily_stats": {},
-            "hourly_stats": {},
-            "current_strategy": {
-                "page_delay_multiplier": 1.0,
-                "cycle_delay_multiplier": 1.0,
-                "last_updated": None,
-                "reason": "Initial settings"
-            },
-            "last_run_timestamp": None  # Track last successful run
-        }
+    def _load_strategy(self):
+        """Load strategy from database"""
+        multiplier = self.db.get_setting('delay_multiplier')
+        if multiplier:
+            self.current_multiplier = float(multiplier)
 
-    def save_history(self):
-        try:
-            if len(self.history["events"]) > 1000:
-                self.history["events"] = self.history["events"][-1000:]
-            with open(self.history_file, 'w') as f:
-                json.dump(self.history, f, indent=2, default=str)
-        except Exception as e:
-            logger.error(f"Error saving scrape history: {e}")
+    def _save_strategy(self):
+        """Save strategy to database"""
+        self.db.set_setting('delay_multiplier', str(self.current_multiplier))
 
     def get_last_run_timestamp(self) -> Optional[int]:
         """Get timestamp of last successful run in milliseconds."""
-        return self.history.get("last_run_timestamp")
+        ts = self.db.get_setting('last_run_timestamp')
+        return int(ts) if ts else None
 
     def set_last_run_timestamp(self, timestamp_ms: int):
         """Set timestamp of current run in milliseconds."""
-        self.history["last_run_timestamp"] = timestamp_ms
-        self.save_history()
+        self.db.set_setting('last_run_timestamp', str(timestamp_ms))
 
     def log_event(self, event_type: str, details: Dict = None):
-        now = datetime.now()
-        event = {
-            "timestamp": now.isoformat(),
-            "type": event_type,
-            "hour": now.hour,
-            "weekday": now.weekday(),
-            "details": details or {}
-        }
-        self.history["events"].append(event)
+        """Log scraping event"""
+        self.db.log_scrape_event(event_type, details)
 
-        date_key = now.strftime("%Y-%m-%d")
-        if date_key not in self.history["daily_stats"]:
-            self.history["daily_stats"][date_key] = {
-                "success": 0, "rate_limit": 0, "block": 0, "timeout": 0, "error": 0
-            }
-        if event_type in self.history["daily_stats"][date_key]:
-            self.history["daily_stats"][date_key][event_type] += 1
-
-        hour_key = str(now.hour)
-        if hour_key not in self.history["hourly_stats"]:
-            self.history["hourly_stats"][hour_key] = {
-                "success": 0, "rate_limit": 0, "block": 0, "timeout": 0, "error": 0
-            }
-        if event_type in self.history["hourly_stats"][hour_key]:
-            self.history["hourly_stats"][hour_key][event_type] += 1
-
-        self.save_history()
-
+        # Analyze and adapt on problems
         if event_type in ["rate_limit", "block"]:
             self.analyze_and_adapt()
 
     def analyze_and_adapt(self):
-        events = self.history["events"]
-        if len(events) < 5:
-            logger.info("📊 Not enough data for analysis yet")
+        """Analyze recent events and adapt strategy"""
+        stats = self.db.get_scrape_stats(hours=24)
+
+        total = sum(stats.values())
+        if total < 5:
             return
 
-        cutoff = datetime.now() - timedelta(hours=24)
-        recent_events = [
-            e for e in events
-            if datetime.fromisoformat(e["timestamp"]) > cutoff
-        ]
+        successes = stats.get('success', 0)
+        blocks = stats.get('block', 0)
+        rate_limits = stats.get('rate_limit', 0)
 
-        if not recent_events:
-            return
-
-        total = len(recent_events)
-        successes = sum(1 for e in recent_events if e["type"] == "success")
-        blocks = sum(1 for e in recent_events if e["type"] == "block")
-        rate_limits = sum(1 for e in recent_events if e["type"] == "rate_limit")
-
-        success_rate = successes / total if total > 0 else 1.0
-        problem_rate = (blocks + rate_limits) / total if total > 0 else 0.0
+        success_rate = successes / total
+        problem_rate = (blocks + rate_limits) / total
 
         logger.info(f"📊 Analysis - Last 24h: {total} events, {success_rate:.1%} success, {problem_rate:.1%} problems")
 
         old_multiplier = self.current_multiplier
-        reason = ""
 
         if problem_rate > 0.3:
             self.current_multiplier = min(5.0, self.current_multiplier * 1.5)
-            reason = f"High problem rate ({problem_rate:.1%}) - increasing delays"
         elif problem_rate > 0.1:
             self.current_multiplier = min(3.0, self.current_multiplier * 1.2)
-            reason = f"Moderate problem rate ({problem_rate:.1%}) - slightly increasing delays"
         elif problem_rate < 0.05 and success_rate > 0.9:
             self.current_multiplier = max(0.5, self.current_multiplier * 0.9)
-            reason = f"Good performance ({success_rate:.1%} success) - optimizing delays"
-        else:
-            reason = "Maintaining current strategy"
-
-        risky_hours = self.find_risky_hours()
-        if risky_hours:
-            logger.info(f"⚠️ Risky hours detected: {risky_hours}")
-
-        self.history["current_strategy"] = {
-            "page_delay_multiplier": self.current_multiplier,
-            "cycle_delay_multiplier": self.current_multiplier,
-            "last_updated": datetime.now().isoformat(),
-            "reason": reason,
-            "success_rate": success_rate,
-            "problem_rate": problem_rate,
-            "risky_hours": risky_hours
-        }
 
         if old_multiplier != self.current_multiplier:
-            logger.info(f"🔄 Strategy updated: multiplier {old_multiplier:.2f} → {self.current_multiplier:.2f}")
-            logger.info(f"📝 Reason: {reason}")
-
-        self.save_history()
-
-    def find_risky_hours(self) -> List[int]:
-        risky = []
-        for hour, stats in self.history["hourly_stats"].items():
-            total = sum(stats.values())
-            if total < 3:
-                continue
-            problems = stats.get("block", 0) + stats.get("rate_limit", 0)
-            if problems / total > 0.2:
-                risky.append(int(hour))
-        return sorted(risky)
+            logger.info(f"🔄 Strategy: multiplier {old_multiplier:.2f} → {self.current_multiplier:.2f}")
+            self._save_strategy()
 
     def get_page_delay(self) -> float:
+        """Get adaptive page delay"""
         base_min, base_max = self.base_page_delay
-        adjusted_min = base_min * self.current_multiplier
-        adjusted_max = base_max * self.current_multiplier
-
-        current_hour = datetime.now().hour
-        risky_hours = self.history["current_strategy"].get("risky_hours", [])
-        if current_hour in risky_hours:
-            adjusted_min *= 1.5
-            adjusted_max *= 1.5
-            logger.info(f"⚠️ Risky hour ({current_hour}:00) - using extended delays")
-
-        return random.uniform(adjusted_min, adjusted_max)
-
-    def get_cycle_delay(self) -> int:
-        base_min, base_max = self.base_cycle_delay
-        adjusted_min = int(base_min * self.current_multiplier * 60)
-        adjusted_max = int(base_max * self.current_multiplier * 60)
-
-        current_hour = datetime.now().hour
-        risky_hours = self.history["current_strategy"].get("risky_hours", [])
-        if current_hour in risky_hours:
-            adjusted_min = int(adjusted_min * 1.5)
-            adjusted_max = int(adjusted_max * 1.5)
-
-        return random.randint(adjusted_min, adjusted_max)
-
-    def get_status_report(self) -> str:
-        strategy = self.history.get("current_strategy", {})
-        events = self.history.get("events", [])
-
-        cutoff = datetime.now() - timedelta(hours=24)
-        recent = [e for e in events if datetime.fromisoformat(e["timestamp"]) > cutoff]
-
-        total = len(recent)
-        if total == 0:
-            return "📊 No scraping data in last 24h"
-
-        successes = sum(1 for e in recent if e["type"] == "success")
-        blocks = sum(1 for e in recent if e["type"] == "block")
-        rate_limits = sum(1 for e in recent if e["type"] == "rate_limit")
-
-        # Pages saved info
-        pages_saved = self.history.get("pages_saved_total", 0)
-
-        report = (
-            f"📊 <b>Adaptive Scraper Status</b>\n"
-            f"{'─' * 25}\n\n"
-            f"📈 <b>Last 24 Hours:</b>\n"
-            f"  ✅ Successes: {successes}\n"
-            f"  🚫 Blocks: {blocks}\n"
-            f"  ⏳ Rate limits: {rate_limits}\n"
-            f"  📊 Success rate: {successes/total:.1%}\n\n"
-            f"⚙️ <b>Current Strategy:</b>\n"
-            f"  🔄 Delay multiplier: {strategy.get('page_delay_multiplier', 1.0):.2f}x\n"
-            f"  📝 Reason: {strategy.get('reason', 'N/A')}\n"
-            f"  💾 Pages saved (smart stop): {pages_saved}\n"
+        return random.uniform(
+            base_min * self.current_multiplier,
+            base_max * self.current_multiplier
         )
 
-        risky_hours = strategy.get("risky_hours", [])
-        if risky_hours:
-            report += f"  ⚠️ Risky hours: {', '.join(f'{h}:00' for h in risky_hours)}\n"
-
-        return report
+    def get_cycle_delay(self) -> int:
+        """Get adaptive cycle delay in seconds"""
+        base_min, base_max = self.base_cycle_delay
+        return random.randint(
+            int(base_min * self.current_multiplier * 60),
+            int(base_max * self.current_multiplier * 60)
+        )
 
 
 class Yad2Monitor:
-    def __init__(self, telegram_bot_token: str, telegram_chat_id: str, min_interval_minutes: int = 10, max_interval_minutes: int = 30):
-        logger.info("🚀 Initializing Yad2Monitor")
-        self.telegram_bot_token = telegram_bot_token
-        self.telegram_chat_id = telegram_chat_id
-        self.min_interval = min_interval_minutes * 60
-        self.max_interval = max_interval_minutes * 60
-        self.data_file = "yad2_data.json"
-        self.price_history_file = "price_history.json"
-        self.apartments = {}
-        self.price_history = {}
-        self.current_check_apartments = set()
-        self.use_parallel_messages = True
+    """Main monitor class with all features integrated"""
 
-        self.delay_manager = AdaptiveDelayManager()
+    def __init__(self):
+        logger.info("🚀 Initializing Enhanced Yad2Monitor")
 
-        logger.info(f"🔑 Telegram Bot Token: {self.telegram_bot_token[:20]}...")
-        logger.info(f"💬 Telegram Chat ID: {self.telegram_chat_id}")
-        logger.info(f"⏱️  Base interval range: {min_interval_minutes}-{max_interval_minutes} minutes")
-        logger.info(f"🔄 Current delay multiplier: {self.delay_manager.current_multiplier:.2f}x")
+        # Initialize database
+        self.db = Database()
 
-        logger.info("🔗 Testing Telegram connection...")
-        self.test_telegram_connection()
+        # Initialize components
+        self.delay_manager = AdaptiveDelayManager(self.db)
+        self.proxy_manager = ProxyManager()
+        self.proxy_rotator = ProxyRotator(self.proxy_manager)
+        self.analytics = MarketAnalytics(self.db)
 
-        self.load_data()
+        # Telegram config
+        telegram_token = os.environ.get("TELEGRAM_BOT_TOKEN")
+        telegram_chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+        self.notifier = NotificationManager(self.db, telegram_token, telegram_chat_id)
 
+        # Load search URLs
+        self.search_urls = self._load_search_urls()
+
+        # User agents for rotation
         self.user_agents = [
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
-            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (iPhone; CPU iPhone OS 17_2_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Safari/605.1.15',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
         ]
+
+        # Web server thread
+        self.web_thread = None
+
         logger.info("✅ Initialization complete")
 
-    def get_random_interval(self) -> int:
-        interval = self.delay_manager.get_cycle_delay()
-        logger.info(f"🎲 Adaptive interval: {interval // 60} minutes ({interval} seconds)")
-        return interval
+    def _load_search_urls(self) -> List[Dict]:
+        """Load search URLs from database or environment"""
+        urls = self.db.get_search_urls()
 
-    def test_telegram_connection(self):
-        try:
-            url = f"https://api.telegram.org/bot{self.telegram_bot_token}/getMe"
-            response = requests.get(url, timeout=10)
-            if response.status_code == 200:
-                bot_info = response.json()
-                if bot_info.get('ok'):
-                    logger.info(f"✅ Bot token is valid. Bot name: @{bot_info['result'].get('username')}")
-        except Exception as e:
-            logger.error(f"❌ Error testing Telegram connection: {e}")
+        if not urls:
+            # Add default URL from environment
+            default_url = os.environ.get(
+                "YAD2_URL",
+                "https://www.yad2.co.il/realestate/rent?topArea=41&area=12&city=8400"
+            )
+            url_id = self.db.add_search_url("Default Search", default_url)
+            urls = [{'id': url_id, 'name': "Default Search", 'url': default_url}]
+
+        logger.info(f"📋 Loaded {len(urls)} search URLs")
+        return urls
 
     def get_headers(self) -> Dict:
+        """Get request headers with random user agent"""
         return {
             'User-Agent': random.choice(self.user_agents),
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -307,41 +196,8 @@ class Yad2Monitor:
             'Cache-Control': 'max-age=0'
         }
 
-    def load_data(self):
-        logger.info("📂 Loading data from files...")
-        if os.path.exists(self.data_file):
-            try:
-                with open(self.data_file, 'r', encoding='utf-8') as f:
-                    self.apartments = json.load(f)
-                logger.info(f"✅ Loaded {len(self.apartments)} apartments from {self.data_file}")
-            except Exception as e:
-                logger.error(f"❌ Error loading apartments data: {e}")
-
-        if os.path.exists(self.price_history_file):
-            try:
-                with open(self.price_history_file, 'r', encoding='utf-8') as f:
-                    self.price_history = json.load(f)
-                logger.info(f"✅ Loaded price history for {len(self.price_history)} apartments")
-            except Exception as e:
-                logger.error(f"❌ Error loading price history: {e}")
-
-    def save_data(self):
-        logger.info("💾 Saving data to files...")
-        try:
-            with open(self.data_file, 'w', encoding='utf-8') as f:
-                json.dump(self.apartments, f, ensure_ascii=False, indent=2)
-            logger.info(f"✅ Saved {len(self.apartments)} apartments to {self.data_file}")
-        except Exception as e:
-            logger.error(f"❌ Error saving apartments data: {e}")
-
-        try:
-            with open(self.price_history_file, 'w', encoding='utf-8') as f:
-                json.dump(self.price_history, f, ensure_ascii=False, indent=2)
-            logger.info(f"✅ Saved price history to {self.price_history_file}")
-        except Exception as e:
-            logger.error(f"❌ Error saving price history: {e}")
-
     def extract_price(self, text: str) -> Optional[int]:
+        """Extract price from text"""
         if not text:
             return None
         text = text.replace(',', '').replace('₪', '').strip()
@@ -350,70 +206,22 @@ class Yad2Monitor:
             return int(max(numbers, key=int))
         return None
 
-    def extract_data_updated_at(self, container) -> Optional[int]:
-        """Extract dataUpdatedAt timestamp (in milliseconds) from apartment container."""
-        try:
-            # Try to find it in data attributes
-            for attr in ['data-updated-at', 'data-updatedat', 'dataupdatedat']:
-                if container.get(attr):
-                    return int(container.get(attr))
-
-            # Try to find in parent elements
-            parent = container
-            for _ in range(5):
-                if parent is None:
-                    break
-                for attr in ['data-updated-at', 'data-updatedat']:
-                    val = parent.get(attr)
-                    if val:
-                        return int(val)
-                parent = parent.parent
-
-            # Try to find in script tags with JSON data
-            scripts = container.find_all('script', type='application/json')
-            for script in scripts:
-                try:
-                    data = json.loads(script.string)
-                    if isinstance(data, dict) and 'dataUpdatedAt' in data:
-                        return int(data['dataUpdatedAt'])
-                except:
-                    pass
-
-            # Search in container's text for timestamp pattern
-            container_str = str(container)
-            # Look for dataUpdatedAt in JSON-like patterns
-            match = re.search(r'"dataUpdatedAt"\s*:\s*(\d{13})', container_str)
-            if match:
-                return int(match.group(1))
-
-            # Also try without quotes
-            match = re.search(r'dataUpdatedAt["\s:]+(\d{13})', container_str)
-            if match:
-                return int(match.group(1))
-
-        except Exception as e:
-            logger.debug(f"Could not extract dataUpdatedAt: {e}")
-
-        return None
-
     def extract_data_updated_at_from_page(self, soup) -> List[int]:
-        """Extract all dataUpdatedAt timestamps from the page's JSON data."""
+        """Extract all dataUpdatedAt timestamps from page"""
         timestamps = []
         try:
-            # Look for Next.js data or similar JSON embedded in page
             scripts = soup.find_all('script')
             for script in scripts:
                 if script.string:
-                    # Find all dataUpdatedAt values
                     matches = re.findall(r'"dataUpdatedAt"\s*:\s*(\d{13})', script.string)
                     for match in matches:
                         timestamps.append(int(match))
         except Exception as e:
-            logger.debug(f"Error extracting timestamps from page: {e}")
-
+            logger.debug(f"Error extracting timestamps: {e}")
         return timestamps
 
     def is_inside_yad1_listing(self, element) -> bool:
+        """Check if element is inside Yad1 (promoted) listing"""
         parent = element.parent
         while parent:
             if parent.name == 'div' and parent.get('class'):
@@ -424,12 +232,13 @@ class Yad2Monitor:
         return False
 
     def find_apartment_elements(self, soup) -> List:
-        all_h2_elements = soup.find_all('h2', attrs={'data-nagish': 'content-section-title'})
-        valid_elements = [h2 for h2 in all_h2_elements if not self.is_inside_yad1_listing(h2)]
-        logger.info(f"🔍 Found {len(valid_elements)} valid apartment elements")
-        return valid_elements
+        """Find valid apartment elements"""
+        all_h2 = soup.find_all('h2', attrs={'data-nagish': 'content-section-title'})
+        valid = [h2 for h2 in all_h2 if not self.is_inside_yad1_listing(h2)]
+        return valid
 
     def get_apartment_container(self, h2_element):
+        """Get the container element for an apartment"""
         parent = h2_element.parent
         depth = 0
         while parent and depth < 10:
@@ -441,6 +250,7 @@ class Yad2Monitor:
         return h2_element.parent if h2_element.parent else h2_element
 
     def get_apartment_id(self, element) -> Optional[str]:
+        """Extract apartment ID from element"""
         link = element.find('a', href=True)
         if link:
             href = link['href']
@@ -449,13 +259,12 @@ class Yad2Monitor:
                 return m.group(1)
         if element.get('data-id'):
             return element.get('data-id')
+        import hashlib
         text_content = element.get_text(strip=True)
         return hashlib.md5(text_content.encode()).hexdigest()[:12]
 
-    def is_valid_apartment_link(self, link: str) -> bool:
-        return link and "/realestate/item/" in link
-
-    def parse_apartment(self, h2_element, page_timestamps: List[int] = None) -> Optional[Dict]:
+    def parse_apartment(self, h2_element) -> Optional[Dict]:
+        """Parse apartment data from HTML element"""
         try:
             container = self.get_apartment_container(h2_element)
             apt_id = self.get_apartment_id(container)
@@ -487,7 +296,7 @@ class Yad2Monitor:
                 if not link.startswith('http'):
                     link = f"https://www.yad2.co.il{link}"
 
-            if not link or not self.is_valid_apartment_link(link):
+            if not link or "/realestate/item/" not in link:
                 return None
 
             # Extract address
@@ -496,14 +305,43 @@ class Yad2Monitor:
             if street_elem:
                 street_address = street_elem.get_text(strip=True)
 
-            # Extract item info
+            # Extract item info (rooms, sqm, floor)
             item_info = None
+            rooms = None
+            sqm = None
+            floor = None
             info_elem = container.find('span', class_='item-data-content_itemInfoLine__AeoPP')
             if info_elem:
                 item_info = info_elem.get_text(strip=True)
+                # Try to parse rooms/sqm/floor
+                parts = item_info.split('·')
+                for part in parts:
+                    part = part.strip()
+                    if 'חדרים' in part or 'חדר' in part:
+                        nums = re.findall(r'[\d.]+', part)
+                        if nums:
+                            rooms = float(nums[0])
+                    elif 'מ"ר' in part or 'מטר' in part:
+                        nums = re.findall(r'\d+', part)
+                        if nums:
+                            sqm = int(nums[0])
+                    elif 'קומה' in part:
+                        nums = re.findall(r'\d+', part)
+                        if nums:
+                            floor = int(nums[0])
 
             # Extract dataUpdatedAt
-            data_updated_at = self.extract_data_updated_at(container)
+            data_updated_at = None
+            container_str = str(container)
+            match = re.search(r'"dataUpdatedAt"\s*:\s*(\d{13})', container_str)
+            if match:
+                data_updated_at = int(match.group(1))
+
+            # Extract image URL
+            image_url = None
+            img_elem = container.find('img')
+            if img_elem:
+                image_url = img_elem.get('src') or img_elem.get('data-src')
 
             return {
                 'id': apt_id,
@@ -513,7 +351,11 @@ class Yad2Monitor:
                 'location': street_address,
                 'street_address': street_address,
                 'item_info': item_info,
+                'rooms': rooms,
+                'sqm': sqm,
+                'floor': floor,
                 'link': link,
+                'image_url': image_url,
                 'data_updated_at': data_updated_at,
                 'last_seen': datetime.now().isoformat()
             }
@@ -523,10 +365,11 @@ class Yad2Monitor:
             return None
 
     def fetch_page(self, url: str, page: int = 1, max_retries: int = 3) -> Optional[str]:
+        """Fetch a page with retry logic and proxy support"""
         for attempt in range(max_retries):
             try:
                 delay = self.delay_manager.get_page_delay() * (attempt + 1)
-                logger.info(f"⏳ Adaptive delay: {delay:.2f}s before page {page}")
+                logger.info(f"⏳ Delay: {delay:.2f}s before page {page}")
                 time.sleep(delay)
 
                 if page > 1:
@@ -536,13 +379,29 @@ class Yad2Monitor:
                     page_url = url
 
                 logger.info(f"🌐 Fetching page {page}")
-                response = requests.get(page_url, headers=self.get_headers(), timeout=30)
+
+                # Use proxy if available
+                if self.proxy_manager.proxies:
+                    response = self.proxy_rotator.make_request(
+                        page_url,
+                        headers=self.get_headers(),
+                        timeout=30
+                    )
+                else:
+                    response = requests.get(
+                        page_url,
+                        headers=self.get_headers(),
+                        timeout=30
+                    )
+
+                if response is None:
+                    continue
 
                 if response.status_code == 429:
                     self.delay_manager.log_event("rate_limit", {"page": page})
-                    wait_time = 300 * (attempt + 1) * self.delay_manager.current_multiplier
-                    logger.warning(f"⚠️ Rate limited! Waiting {wait_time // 60:.0f} minutes...")
-                    time.sleep(wait_time)
+                    wait = 300 * (attempt + 1) * self.delay_manager.current_multiplier
+                    logger.warning(f"⚠️ Rate limited! Waiting {wait // 60:.0f} minutes...")
+                    time.sleep(wait)
                     continue
 
                 if response.status_code == 200:
@@ -563,15 +422,9 @@ class Yad2Monitor:
                 elif response.status_code >= 500:
                     self.delay_manager.log_event("error", {"page": page, "status": response.status_code})
                     continue
-                else:
-                    return None
 
             except requests.exceptions.Timeout:
                 self.delay_manager.log_event("timeout", {"page": page})
-                continue
-            except requests.exceptions.ConnectionError:
-                self.delay_manager.log_event("error", {"page": page, "type": "connection"})
-                time.sleep(30 * (attempt + 1))
                 continue
             except Exception as e:
                 self.delay_manager.log_event("error", {"page": page, "exception": str(e)})
@@ -582,10 +435,7 @@ class Yad2Monitor:
         return None
 
     def scrape_all_pages(self, base_url: str, max_pages: int = 50) -> Tuple[List[Dict], int]:
-        """
-        Scrape pages with smart stop - stops when hitting apartments older than last run.
-        Returns tuple of (apartments_list, pages_saved_count)
-        """
+        """Scrape pages with smart stop based on dataUpdatedAt"""
         logger.info(f"🔍 Starting smart scrape from {base_url}")
 
         last_run_ts = self.delay_manager.get_last_run_timestamp()
@@ -595,271 +445,169 @@ class Yad2Monitor:
         else:
             logger.info("📅 First run - will scrape all pages")
 
-        # Record current run start time
         current_run_ts = int(datetime.now().timestamp() * 1000)
-
         all_apartments = []
         pages_saved = 0
-        stop_reason = None
-        oldest_timestamp_seen = None
-
         page = 1
+
         while page <= max_pages:
             logger.info(f"{'=' * 50}")
             logger.info(f"📄 Processing page {page}")
 
             html = self.fetch_page(base_url, page)
-
             if not html:
-                stop_reason = "no_content"
                 break
 
             soup = BeautifulSoup(html, 'html.parser')
 
-            # Extract all timestamps from the page first
+            # Check timestamps for smart stop
             page_timestamps = self.extract_data_updated_at_from_page(soup)
-            if page_timestamps:
-                min_ts = min(page_timestamps)
+            if page_timestamps and last_run_ts:
                 max_ts = max(page_timestamps)
-                logger.info(f"📊 Page timestamps range: {datetime.fromtimestamp(min_ts/1000).strftime('%H:%M:%S')} - {datetime.fromtimestamp(max_ts/1000).strftime('%H:%M:%S')}")
-
-                if oldest_timestamp_seen is None or min_ts < oldest_timestamp_seen:
-                    oldest_timestamp_seen = min_ts
-
-                # Smart stop: if the newest item on this page is older than last run, stop
-                if last_run_ts and max_ts < last_run_ts:
+                if max_ts < last_run_ts:
                     pages_saved = max_pages - page
-                    stop_reason = "smart_stop"
-                    logger.info(f"🛑 Smart stop: Page {page} has no new updates (newest: {datetime.fromtimestamp(max_ts/1000).strftime('%H:%M:%S')})")
+                    logger.info(f"🛑 Smart stop: Page {page} has no new updates")
                     logger.info(f"💾 Saved {pages_saved} page requests!")
                     break
 
             h2_elements = self.find_apartment_elements(soup)
-
             if not h2_elements:
-                stop_reason = "no_apartments"
                 break
 
             parsed_count = 0
-            found_old_apartment = False
-
             for h2_elem in h2_elements:
-                apt = self.parse_apartment(h2_elem, page_timestamps)
-
+                apt = self.parse_apartment(h2_elem)
                 if apt and apt['price'] and apt['link']:
                     all_apartments.append(apt)
                     parsed_count += 1
 
-                    # Check if this apartment is older than last run
-                    if apt.get('data_updated_at') and last_run_ts:
-                        if apt['data_updated_at'] < last_run_ts:
-                            found_old_apartment = True
-
             logger.info(f"✅ Page {page}: parsed {parsed_count} apartments")
-
-            # If we found an old apartment and we're past page 1, we can consider stopping
-            # But continue for at least this page to get all new ones
-            if found_old_apartment and page > 1:
-                # Check if ALL remaining apartments are old
-                new_on_page = sum(1 for apt in all_apartments[-parsed_count:]
-                                  if apt.get('data_updated_at') and apt['data_updated_at'] >= last_run_ts)
-                if new_on_page == 0:
-                    pages_saved = max_pages - page
-                    stop_reason = "all_old"
-                    logger.info(f"🛑 Smart stop: All apartments on page {page} are old")
-                    break
-
             page += 1
 
         # Update last run timestamp
         self.delay_manager.set_last_run_timestamp(current_run_ts)
 
-        # Track pages saved stats
-        if pages_saved > 0:
-            total_saved = self.delay_manager.history.get("pages_saved_total", 0) + pages_saved
-            self.delay_manager.history["pages_saved_total"] = total_saved
-            self.delay_manager.save_history()
-
         logger.info(f"{'=' * 50}")
         logger.info(f"✅ Scraping complete: {len(all_apartments)} apartments from {page - 1} pages")
-        if stop_reason:
-            logger.info(f"📝 Stop reason: {stop_reason}")
         if pages_saved > 0:
-            logger.info(f"💾 Pages saved this run: {pages_saved}")
+            logger.info(f"💾 Pages saved: {pages_saved}")
 
         return all_apartments, pages_saved
 
-    def send_telegram_message(self, message: str, max_retries: int = 3) -> bool:
-        for attempt in range(max_retries):
-            try:
-                url = f"https://api.telegram.org/bot{self.telegram_bot_token}/sendMessage"
-                data = {
-                    'chat_id': self.telegram_chat_id,
-                    'text': message,
-                    'parse_mode': 'HTML',
-                    'disable_web_page_preview': False
-                }
+    def process_apartments(self, apartments: List[Dict]) -> Tuple[List[Dict], List[Dict], List[str]]:
+        """Process apartments and detect changes"""
+        new_apartments = []
+        price_changes = []
+        active_ids = set()
 
-                response = requests.post(url, data=data, timeout=10)
-
-                if response.status_code == 200:
-                    return True
-                elif response.status_code == 429:
-                    retry_after = int(response.headers.get('Retry-After', 30))
-                    time.sleep(retry_after)
-                    continue
-                elif response.status_code >= 500:
-                    time.sleep(5 * (attempt + 1))
-                    continue
-                else:
-                    return False
-
-            except Exception as e:
-                if attempt < max_retries - 1:
-                    time.sleep(5 * (attempt + 1))
-                    continue
-                return False
-
-        return False
-
-    def update_price_history(self, apt_id: str, price: int):
-        if apt_id not in self.price_history:
-            self.price_history[apt_id] = []
-        self.price_history[apt_id].append({
-            'price': price,
-            'timestamp': datetime.now().isoformat()
-        })
-        self.price_history[apt_id] = self.price_history[apt_id][-50:]
-
-    def get_last_price_change_date(self, apt_id: str) -> Optional[str]:
-        if apt_id not in self.price_history or len(self.price_history[apt_id]) < 2:
-            return None
-        return self.price_history[apt_id][-2]['timestamp']
-
-    def check_for_changes(self, new_apartments: List[Dict]):
-        logger.info(f"🔍 Checking for changes in {len(new_apartments)} apartments")
-
-        self.current_check_apartments = set()
-        new_apartments_list = []
-        price_changes_list = []
-
-        for apt in new_apartments:
+        for apt in apartments:
             apt_id = apt['id']
-            current_price = apt['price']
-            self.current_check_apartments.add(apt_id)
+            active_ids.add(apt_id)
 
-            if apt_id in self.apartments:
-                old_price = self.apartments[apt_id].get('price')
+            # Save to database
+            _, is_new = self.db.upsert_apartment(apt)
 
-                if old_price and current_price and old_price != current_price:
-                    change = current_price - old_price
-                    change_pct = (change / old_price) * 100
-
-                    logger.info(f"💰 Price change: {apt_id} ₪{old_price:,} → ₪{current_price:,}")
-
-                    old_price_date = self.get_last_price_change_date(apt_id)
-                    if not old_price_date:
-                        old_price_date = self.apartments[apt_id].get('last_seen', datetime.now().isoformat())
-
-                    price_changes_list.append({
-                        'apartment': apt,
-                        'old_price': old_price,
-                        'new_price': current_price,
-                        'change': change,
-                        'change_pct': change_pct,
-                        'old_price_date': old_price_date,
-                        'new_price_date': apt['last_seen']
-                    })
-
-                    self.update_price_history(apt_id, current_price)
+            if is_new:
+                new_apartments.append(apt)
+                logger.info(f"🆕 New: {apt_id} - {apt['title'][:40]}")
             else:
-                logger.info(f"🆕 New apartment: {apt_id} - {apt['title'][:40]}")
-                new_apartments_list.append(apt)
-                self.update_price_history(apt_id, current_price)
+                # Check for price change
+                existing = self.db.get_apartment(apt_id)
+                if existing and existing.get('price') != apt.get('price'):
+                    old_price = existing['price']
+                    new_price = apt['price']
+                    if old_price and new_price:
+                        change = new_price - old_price
+                        change_pct = (change / old_price) * 100
+                        price_changes.append({
+                            'apartment': apt,
+                            'old_price': old_price,
+                            'new_price': new_price,
+                            'change': change,
+                            'change_pct': change_pct
+                        })
+                        logger.info(f"💰 Price change: {apt_id} ₪{old_price:,} → ₪{new_price:,}")
 
-            self.apartments[apt_id] = apt
+        # Mark inactive apartments
+        removed = self.db.mark_apartments_inactive(active_ids)
 
-        removed = set(self.apartments.keys()) - self.current_check_apartments
-        for apt_id in removed:
-            logger.info(f"🗑️ Removed: {apt_id}")
-            del self.apartments[apt_id]
-
-        logger.info(f"📊 Summary - New: {len(new_apartments_list)}, Price changes: {len(price_changes_list)}, Removed: {len(removed)}")
-
-        if new_apartments_list or price_changes_list:
-            self.send_batch_telegram_messages(new_apartments_list, price_changes_list)
-
-    def send_single_telegram_message(self, message: str):
-        try:
-            self.send_telegram_message(message)
-            time.sleep(0.5)
-            return True
-        except:
-            return False
-
-    def send_batch_telegram_messages(self, new_apartments_list: List[Dict], price_changes_list: List[Dict]):
-        messages = []
-
-        for apt in new_apartments_list:
-            timestamp = datetime.fromisoformat(apt['last_seen']).strftime('%d/%m/%Y %H:%M')
-            info_line = f"📋 {apt['item_info']}\n" if apt.get('item_info') else ''
-
-            message = (
-                f"🆕 <b>דירה חדשה!</b>\n"
-                f"{'─' * 30}\n\n"
-                f"<b>📍 {apt['title']}</b>\n\n"
-                f"🏠 <b>כתובת:</b> {apt.get('street_address') or 'לא צוין'}\n"
-                f"{info_line}"
-                f"💰 <b>מחיר:</b> ₪{apt['price']:,}\n"
-                f"📅 <b>תאריך:</b> {timestamp}\n\n"
-                f"🔗 <a href='{apt['link']}'>לצפייה בדירה</a>"
-            )
-            messages.append(message)
-
-        for change_info in price_changes_list:
-            apt = change_info['apartment']
-            old_price = change_info['old_price']
-            new_price = change_info['new_price']
-            change = change_info['change']
-            change_pct = change_info['change_pct']
-
-            emoji = "📉" if change < 0 else "📈"
-            change_text = "ירידת מחיר!" if change < 0 else "עליית מחיר"
-
-            message = (
-                f"{emoji} <b>{change_text}</b>\n"
-                f"{'─' * 30}\n\n"
-                f"<b>📍 {apt['title']}</b>\n\n"
-                f"💵 <b>מחיר קודם:</b> ₪{old_price:,}\n"
-                f"💰 <b>מחיר חדש:</b> ₪{new_price:,}\n"
-                f"{'🔽' if change < 0 else '🔼'} <b>שינוי:</b> ₪{abs(change):,} ({change_pct:+.1f}%)\n\n"
-                f"🔗 <a href='{apt['link']}'>לצפייה בדירה</a>"
-            )
-            messages.append(message)
-
-        if self.use_parallel_messages:
-            try:
-                with ThreadPoolExecutor(max_workers=5) as executor:
-                    list(executor.map(self.send_single_telegram_message, messages))
-                return
-            except:
-                self.use_parallel_messages = False
-
-        for msg in messages:
-            self.send_single_telegram_message(msg)
-
-    def monitor(self, url: str):
-        logger.info("=" * 80)
-        logger.info("🚀 Starting Yad2 Monitor with Smart Pagination")
-        logger.info("=" * 80)
-
-        self.send_telegram_message(
-            "🤖 <b>Yad2 Monitor Started!</b>\n\n"
-            f"🔄 <b>Adaptive System Active</b>\n"
-            f"📊 Delay multiplier: {self.delay_manager.current_multiplier:.2f}x\n"
-            f"🧠 <b>Smart pagination:</b> Stops when no new updates\n\n"
-            "🔍 <b>Status:</b> Active and monitoring..."
+        # Update daily summary
+        price_drops = len([p for p in price_changes if p['change'] < 0])
+        price_increases = len([p for p in price_changes if p['change'] > 0])
+        self.db.update_daily_summary(
+            new_apts=len(new_apartments),
+            price_drops=price_drops,
+            price_increases=price_increases,
+            removed=len(removed)
         )
+
+        logger.info(f"📊 Summary - New: {len(new_apartments)}, Price changes: {len(price_changes)}, Removed: {len(removed)}")
+
+        return new_apartments, price_changes, removed
+
+    def send_notifications(self, new_apartments: List[Dict], price_changes: List[Dict]):
+        """Send notifications for changes"""
+        for apt in new_apartments:
+            self.notifier.notify_new_apartment(apt)
+
+        for change in price_changes:
+            self.notifier.notify_price_change(
+                change['apartment'],
+                change['old_price'],
+                change['new_price']
+            )
+
+    def start_web_server(self, port: int = 5000):
+        """Start web server in background thread"""
+        def run():
+            run_web_server(self.db, self.analytics, port=port, debug=False)
+
+        self.web_thread = threading.Thread(target=run, daemon=True)
+        self.web_thread.start()
+        logger.info(f"🌐 Web server started on port {port}")
+
+    def run_once(self):
+        """Run a single scrape cycle"""
+        all_new = []
+        all_changes = []
+
+        for search in self.search_urls:
+            logger.info(f"📋 Scraping: {search['name']}")
+            apartments, pages_saved = self.scrape_all_pages(search['url'])
+
+            if apartments:
+                new_apts, price_changes, _ = self.process_apartments(apartments)
+                all_new.extend(new_apts)
+                all_changes.extend(price_changes)
+
+                # Update search URL last scraped
+                self.db.update_search_url_scraped(search['id'])
+
+        if all_new or all_changes:
+            self.send_notifications(all_new, all_changes)
+
+        # Check for daily digest time
+        self.notifier.check_daily_digest_time()
+
+        return len(all_new), len(all_changes)
+
+    def monitor(self):
+        """Main monitoring loop"""
+        logger.info("=" * 80)
+        logger.info("🚀 Starting Yad2 Monitor - Enhanced Edition")
+        logger.info("=" * 80)
+
+        # Start web server
+        web_port = int(os.environ.get('WEB_PORT', 5000))
+        enable_web = os.environ.get('ENABLE_WEB', 'true').lower() == 'true'
+        if enable_web:
+            self.start_web_server(web_port)
+
+        # Send startup notification
+        self.notifier.send_startup_message({
+            'min_interval': int(os.environ.get('MIN_INTERVAL_MINUTES', 60)),
+            'max_interval': int(os.environ.get('MAX_INTERVAL_MINUTES', 90))
+        })
 
         iteration = 0
 
@@ -870,64 +618,49 @@ class Yad2Monitor:
                 logger.info(f"🔄 ITERATION {iteration} - {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
                 logger.info("=" * 80)
 
-                apartments, pages_saved = self.scrape_all_pages(url)
+                new_count, change_count = self.run_once()
 
-                if apartments:
-                    logger.info(f"✅ Found {len(apartments)} apartments")
-
-                    self.check_for_changes(apartments)
-                    self.save_data()
-
-                    if pages_saved > 0:
-                        logger.info(f"💾 Smart stop saved {pages_saved} page requests!")
+                logger.info(f"✅ Cycle complete - New: {new_count}, Changes: {change_count}")
 
                 # Status report every 10 iterations
                 if iteration % 10 == 0:
-                    self.send_telegram_message(self.delay_manager.get_status_report())
+                    stats = self.db.get_scrape_stats(hours=24)
+                    self.notifier.send_status_report(stats, self.delay_manager.current_multiplier)
 
-                interval = self.get_random_interval()
+                # Wait for next cycle
+                interval = self.delay_manager.get_cycle_delay()
                 next_check = datetime.now() + timedelta(seconds=interval)
                 logger.info(f"⏰ Next check: {next_check.strftime('%H:%M:%S')}")
                 logger.info(f"😴 Sleeping {interval // 60} minutes...")
 
-                sleep_start = time.time()
-                while time.time() - sleep_start < interval:
-                    time.sleep(min(60, interval - (time.time() - sleep_start)))
+                time.sleep(interval)
 
             except KeyboardInterrupt:
                 logger.info("🛑 Stopping monitor...")
-                self.send_telegram_message("🛑 <b>Yad2 Monitor Stopped</b>")
+                self.notifier.send_telegram_message("🛑 <b>Yad2 Monitor Stopped</b>")
                 break
             except Exception as e:
                 logger.error(f"❌ Error: {e}", exc_info=True)
                 self.delay_manager.log_event("error", {"type": "monitor_loop", "exception": str(e)})
-                self.send_telegram_message(f"❌ <b>Error</b>\n\n<code>{str(e)}</code>")
+                self.notifier.send_error_alert(str(e), "Monitor loop")
                 time.sleep(300)
 
 
-if __name__ == "__main__":
-    logger.info("🚀 Starting Yad2 Monitor with Smart Pagination")
+def main():
+    """Main entry point"""
+    logger.info("🚀 Starting Yad2 Monitor - Enhanced Edition")
 
-    TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-    TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-    YAD2_URL = os.environ.get("YAD2_URL", "https://www.yad2.co.il/realestate/rent?minRooms=4&minSqarremeter=100&topArea=41&area=12&city=8400")
-    MIN_INTERVAL_MINUTES = int(os.environ.get("MIN_INTERVAL_MINUTES", "60"))
-    MAX_INTERVAL_MINUTES = int(os.environ.get("MAX_INTERVAL_MINUTES", "90"))
-
-    if not TELEGRAM_BOT_TOKEN:
+    # Validate environment
+    if not os.environ.get("TELEGRAM_BOT_TOKEN"):
         logger.error("❌ TELEGRAM_BOT_TOKEN required")
         exit(1)
-    if not TELEGRAM_CHAT_ID:
+    if not os.environ.get("TELEGRAM_CHAT_ID"):
         logger.error("❌ TELEGRAM_CHAT_ID required")
         exit(1)
 
-    logger.info(f"⚙️ Config: Interval {MIN_INTERVAL_MINUTES}-{MAX_INTERVAL_MINUTES} min")
+    monitor = Yad2Monitor()
+    monitor.monitor()
 
-    monitor = Yad2Monitor(
-        telegram_bot_token=TELEGRAM_BOT_TOKEN,
-        telegram_chat_id=TELEGRAM_CHAT_ID,
-        min_interval_minutes=MIN_INTERVAL_MINUTES,
-        max_interval_minutes=MAX_INTERVAL_MINUTES
-    )
 
-    monitor.monitor(YAD2_URL)
+if __name__ == "__main__":
+    main()

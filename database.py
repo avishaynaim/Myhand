@@ -16,12 +16,25 @@ logger = logging.getLogger(__name__)
 class Database:
     def __init__(self, db_path: str = "yad2_monitor.db"):
         self.db_path = db_path
+        self._init_wal_mode()
         self.init_database()
+
+    def _init_wal_mode(self):
+        """Enable WAL mode for better concurrent access"""
+        conn = sqlite3.connect(self.db_path)
+        conn.execute('PRAGMA journal_mode=WAL')
+        conn.execute('PRAGMA busy_timeout=30000')  # 30 second timeout
+        conn.close()
 
     @contextmanager
     def get_connection(self):
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(
+            self.db_path,
+            timeout=30.0,  # Wait up to 30 seconds for lock
+            check_same_thread=False  # Allow access from different threads
+        )
         conn.row_factory = sqlite3.Row
+        conn.execute('PRAGMA busy_timeout=30000')
         try:
             yield conn
             conn.commit()

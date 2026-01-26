@@ -22,6 +22,12 @@ class NotificationManager:
         self.telegram_token = telegram_token or os.environ.get('TELEGRAM_BOT_TOKEN')
         self.telegram_chat_id = telegram_chat_id or os.environ.get('TELEGRAM_CHAT_ID')
 
+        # Server identification
+        self.server_name = os.environ.get('SERVER_NAME') or \
+                          os.environ.get('RAILWAY_SERVICE_NAME') or \
+                          os.environ.get('RAILWAY_PROJECT_NAME') or \
+                          'Yad2-Monitor'
+
         self.notification_queue: List[Dict] = []
         self.daily_notifications: List[Dict] = []  # Collected for daily digest
 
@@ -34,6 +40,10 @@ class NotificationManager:
         # Rate limiting
         self.last_message_time = 0
         self.min_message_interval = 0.5  # seconds between messages
+
+    def get_server_signature(self) -> str:
+        """Get server signature for messages"""
+        return f"\n\n🖥️ <i>{self.server_name}</i>"
 
     def should_notify(self, apt: Dict, notification_type: str = 'new') -> bool:
         """Check if we should send notification for this apartment based on filters"""
@@ -85,6 +95,7 @@ class NotificationManager:
             f"{floor_str}\n"
             f"📅 <b>תאריך:</b> {timestamp}\n\n"
             f"🔗 <a href='{apt.get('link', '')}'>לצפייה בדירה</a>"
+            f"{self.get_server_signature()}"
         )
 
         return message
@@ -117,6 +128,7 @@ class NotificationManager:
             f"{change_emoji} <b>שינוי:</b> ₪{abs(change):,} ({change_pct:+.1f}%)"
             f"{recommendation}\n\n"
             f"🔗 <a href='{apt.get('link', '')}'>לצפייה בדירה</a>"
+            f"{self.get_server_signature()}"
         )
 
         return message
@@ -397,7 +409,8 @@ class NotificationManager:
             f"  ❌ שגיאות: {scrape_stats.get('error', 0)}\n"
             f"  📊 אחוז הצלחה: {success_rate:.1f}%\n\n"
             f"⚙️ <b>הגדרות:</b>\n"
-            f"  🔄 מכפיל השהיה: {delay_multiplier:.2f}x\n"
+            f"  🔄 מכפיל השהיה: {delay_multiplier:.2f}x"
+            f"{self.get_server_signature()}"
         )
 
         self.send_telegram_message(message)
@@ -413,6 +426,7 @@ class NotificationManager:
             message += f"\n\n📝 <b>הקשר:</b> {context}"
 
         message += f"\n\n⏰ {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}"
+        message += self.get_server_signature()
 
         self.send_telegram_message(message)
 
@@ -429,6 +443,7 @@ class NotificationManager:
             message += f"⏱️ <b>מרווח:</b> {config.get('min_interval', 60)}-{config.get('max_interval', 90)} דקות\n"
 
         message += f"\n🔍 <b>סטטוס:</b> מנטר..."
+        message += self.get_server_signature()
 
         self.send_telegram_message(message)
 

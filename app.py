@@ -597,8 +597,8 @@ class Yad2Monitor:
         logger.info("🚀 Starting Yad2 Monitor - Enhanced Edition")
         logger.info("=" * 80)
 
-        # Start web server
-        web_port = int(os.environ.get('WEB_PORT', 5000))
+        # Start web server (Railway sets PORT automatically)
+        web_port = int(os.environ.get('PORT', os.environ.get('WEB_PORT', 5000)))
         enable_web = os.environ.get('ENABLE_WEB', 'true').lower() == 'true'
         if enable_web:
             self.start_web_server(web_port)

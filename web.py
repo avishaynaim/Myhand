@@ -447,6 +447,205 @@ def create_web_app(database, analytics=None):
         """Serve the dashboard HTML"""
         return render_template_string(DASHBOARD_HTML)
 
+    @app.route('/endpoints')
+    def list_endpoints():
+        """List all available API endpoints"""
+        endpoints_html = '''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Yad2 Monitor - API Endpoints</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container { max-width: 900px; margin: 0 auto; }
+        h1 { color: white; text-align: center; margin-bottom: 10px; }
+        .subtitle { color: rgba(255,255,255,0.8); text-align: center; margin-bottom: 30px; }
+        .card {
+            background: white;
+            border-radius: 15px;
+            padding: 25px;
+            margin-bottom: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+        }
+        .card h2 { color: #333; margin-bottom: 15px; border-bottom: 2px solid #667eea; padding-bottom: 10px; }
+        .endpoint-list { list-style: none; }
+        .endpoint-item {
+            padding: 12px 15px;
+            border-bottom: 1px solid #eee;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        .endpoint-item:last-child { border-bottom: none; }
+        .endpoint-item:hover { background: #f8f9fa; }
+        .method {
+            font-size: 0.75em;
+            font-weight: bold;
+            padding: 4px 8px;
+            border-radius: 4px;
+            min-width: 50px;
+            text-align: center;
+        }
+        .get { background: #61affe; color: white; }
+        .post { background: #49cc90; color: white; }
+        .delete { background: #f93e3e; color: white; }
+        .endpoint-link {
+            color: #667eea;
+            text-decoration: none;
+            font-family: monospace;
+            font-size: 1.1em;
+        }
+        .endpoint-link:hover { text-decoration: underline; }
+        .endpoint-desc { color: #666; font-size: 0.9em; margin-left: auto; }
+        .back-link {
+            display: inline-block;
+            margin-bottom: 20px;
+            color: white;
+            text-decoration: none;
+            font-size: 1.1em;
+        }
+        .back-link:hover { text-decoration: underline; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <a href="/" class="back-link">← Back to Dashboard</a>
+        <h1>API Endpoints</h1>
+        <p class="subtitle">Click any endpoint to open it</p>
+
+        <div class="card">
+            <h2>Pages</h2>
+            <ul class="endpoint-list">
+                <li class="endpoint-item">
+                    <span class="method get">GET</span>
+                    <a href="/" class="endpoint-link">/</a>
+                    <span class="endpoint-desc">Main Dashboard</span>
+                </li>
+                <li class="endpoint-item">
+                    <span class="method get">GET</span>
+                    <a href="/health" class="endpoint-link">/health</a>
+                    <span class="endpoint-desc">System Health & Stats</span>
+                </li>
+                <li class="endpoint-item">
+                    <span class="method get">GET</span>
+                    <a href="/endpoints" class="endpoint-link">/endpoints</a>
+                    <span class="endpoint-desc">This page</span>
+                </li>
+            </ul>
+        </div>
+
+        <div class="card">
+            <h2>Apartments</h2>
+            <ul class="endpoint-list">
+                <li class="endpoint-item">
+                    <span class="method get">GET</span>
+                    <a href="/api/apartments" class="endpoint-link">/api/apartments</a>
+                    <span class="endpoint-desc">All apartments (filterable)</span>
+                </li>
+                <li class="endpoint-item">
+                    <span class="method get">GET</span>
+                    <a href="/api/favorites" class="endpoint-link">/api/favorites</a>
+                    <span class="endpoint-desc">Favorite apartments</span>
+                </li>
+                <li class="endpoint-item">
+                    <span class="method get">GET</span>
+                    <a href="/api/ignored" class="endpoint-link">/api/ignored</a>
+                    <span class="endpoint-desc">Ignored apartments</span>
+                </li>
+            </ul>
+        </div>
+
+        <div class="card">
+            <h2>Analytics & Stats</h2>
+            <ul class="endpoint-list">
+                <li class="endpoint-item">
+                    <span class="method get">GET</span>
+                    <a href="/api/stats" class="endpoint-link">/api/stats</a>
+                    <span class="endpoint-desc">Market statistics</span>
+                </li>
+                <li class="endpoint-item">
+                    <span class="method get">GET</span>
+                    <a href="/api/analytics" class="endpoint-link">/api/analytics</a>
+                    <span class="endpoint-desc">Detailed analytics</span>
+                </li>
+                <li class="endpoint-item">
+                    <span class="method get">GET</span>
+                    <a href="/api/trends" class="endpoint-link">/api/trends</a>
+                    <span class="endpoint-desc">Price trends</span>
+                </li>
+                <li class="endpoint-item">
+                    <span class="method get">GET</span>
+                    <a href="/api/price-drops" class="endpoint-link">/api/price-drops</a>
+                    <span class="endpoint-desc">Recent price drops</span>
+                </li>
+                <li class="endpoint-item">
+                    <span class="method get">GET</span>
+                    <a href="/api/daily-summary" class="endpoint-link">/api/daily-summary</a>
+                    <span class="endpoint-desc">Today's summary</span>
+                </li>
+                <li class="endpoint-item">
+                    <span class="method get">GET</span>
+                    <a href="/api/scrape-stats" class="endpoint-link">/api/scrape-stats</a>
+                    <span class="endpoint-desc">Scraping statistics</span>
+                </li>
+                <li class="endpoint-item">
+                    <span class="method get">GET</span>
+                    <a href="/api/time-on-market" class="endpoint-link">/api/time-on-market</a>
+                    <span class="endpoint-desc">Time on market analysis</span>
+                </li>
+            </ul>
+        </div>
+
+        <div class="card">
+            <h2>Configuration</h2>
+            <ul class="endpoint-list">
+                <li class="endpoint-item">
+                    <span class="method get">GET</span>
+                    <a href="/api/search-urls" class="endpoint-link">/api/search-urls</a>
+                    <span class="endpoint-desc">Active search URLs</span>
+                </li>
+                <li class="endpoint-item">
+                    <span class="method get">GET</span>
+                    <a href="/api/filters" class="endpoint-link">/api/filters</a>
+                    <span class="endpoint-desc">Active filters</span>
+                </li>
+                <li class="endpoint-item">
+                    <span class="method get">GET</span>
+                    <a href="/api/settings" class="endpoint-link">/api/settings</a>
+                    <span class="endpoint-desc">App settings</span>
+                </li>
+            </ul>
+        </div>
+
+        <div class="card">
+            <h2>Export</h2>
+            <ul class="endpoint-list">
+                <li class="endpoint-item">
+                    <span class="method get">GET</span>
+                    <a href="/api/export/csv" class="endpoint-link">/api/export/csv</a>
+                    <span class="endpoint-desc">Download CSV</span>
+                </li>
+                <li class="endpoint-item">
+                    <span class="method get">GET</span>
+                    <a href="/api/export/price-history" class="endpoint-link">/api/export/price-history</a>
+                    <span class="endpoint-desc">Price history CSV</span>
+                </li>
+            </ul>
+        </div>
+    </div>
+</body>
+</html>
+'''
+        return render_template_string(endpoints_html)
+
     @app.route('/health')
     def health_check():
         """Health check endpoint with detailed system status"""

@@ -897,7 +897,8 @@ def create_web_app(database, analytics=None):
     @app.route('/api/export/csv')
     def export_csv():
         """Export apartments to CSV"""
-        filepath = f"/tmp/yad2_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        import tempfile
+        filepath = os.path.join(tempfile.gettempdir(), f"yad2_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
         success = db.export_to_csv(filepath)
         if success:
             return send_file(filepath, as_attachment=True, download_name='apartments.csv')
@@ -907,7 +908,8 @@ def create_web_app(database, analytics=None):
     def export_price_history():
         """Export price history to CSV"""
         apt_id = request.args.get('apartment_id')
-        filepath = f"/tmp/price_history_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        import tempfile
+        filepath = os.path.join(tempfile.gettempdir(), f"price_history_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
         success = db.export_price_history_csv(filepath, apt_id)
         if success:
             return send_file(filepath, as_attachment=True, download_name='price_history.csv')

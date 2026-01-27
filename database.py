@@ -5,6 +5,7 @@ Handles persistent storage for apartments, price history, settings, favorites
 import sqlite3
 import json
 import os
+import threading
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 from contextlib import contextmanager
@@ -16,6 +17,7 @@ logger = logging.getLogger(__name__)
 class Database:
     def __init__(self, db_path: str = "yad2_monitor.db"):
         self.db_path = db_path
+        self._write_lock = threading.Lock()
         self._init_wal_mode()
         self.init_database()
 
@@ -28,21 +30,22 @@ class Database:
 
     @contextmanager
     def get_connection(self):
-        conn = sqlite3.connect(
-            self.db_path,
-            timeout=30.0,  # Wait up to 30 seconds for lock
-            check_same_thread=False  # Allow access from different threads
-        )
-        conn.row_factory = sqlite3.Row
-        conn.execute('PRAGMA busy_timeout=30000')
-        try:
-            yield conn
-            conn.commit()
-        except Exception as e:
-            conn.rollback()
-            raise e
-        finally:
-            conn.close()
+        with self._write_lock:
+            conn = sqlite3.connect(
+                self.db_path,
+                timeout=30.0,  # Wait up to 30 seconds for lock
+                check_same_thread=False  # Allow access from different threads
+            )
+            conn.row_factory = sqlite3.Row
+            conn.execute('PRAGMA busy_timeout=30000')
+            try:
+                yield conn
+                conn.commit()
+            except Exception as e:
+                conn.rollback()
+                raise e
+            finally:
+                conn.close()
 
     def init_database(self):
         """Initialize all database tables"""
@@ -236,10 +239,13 @@ class Database:
                 json.dumps(apt, ensure_ascii=False)
             ))
 
-            # Record price if changed or new
+            # Record price if changed or new (inline to avoid nested connection)
             if is_new or price_changed:
                 if apt.get('price'):
-                    self.add_price_history(apt['id'], apt['price'])
+                    cursor.execute(
+                        'INSERT INTO price_history (apartment_id, price) VALUES (?, ?)',
+                        (apt['id'], apt['price'])
+                    )
 
             return apt['id'], is_new
 

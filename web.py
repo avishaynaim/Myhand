@@ -152,15 +152,41 @@ DASHBOARD_HTML = '''
             padding: 40px;
             color: #666;
         }
+        .top-nav {
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            margin-bottom: 25px;
+        }
+        .nav-btn {
+            padding: 12px 24px;
+            background: rgba(255,255,255,0.95);
+            color: #667eea;
+            border-radius: 10px;
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 1em;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            transition: all 0.2s;
+        }
+        .nav-btn:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(0,0,0,0.15); }
         @media (max-width: 768px) {
             .filters { flex-direction: column; }
             .apartment-item { flex-direction: column; align-items: flex-start; gap: 10px; }
+            .top-nav { flex-wrap: wrap; }
         }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>🏠 Yad2 Monitor Dashboard</h1>
+
+        <div class="top-nav">
+            <a href="/endpoints" class="nav-btn">📋 All Endpoints</a>
+            <a href="/health" class="nav-btn">💚 Health Status</a>
+            <a href="/api/apartments" class="nav-btn">🏢 Apartments API</a>
+            <a href="/api/stats" class="nav-btn">📊 Stats API</a>
+        </div>
 
         <div class="stats-grid" id="stats">
             <div class="stat-card">

@@ -105,6 +105,52 @@ class MarketAnalytics:
                 'generated_at': datetime.now().isoformat()
             }
 
+    def get_daily_statistics(self, days: int = 7) -> Dict:
+        """
+        Get daily statistics for new apartments and price changes.
+        Used for market trends chart visualization.
+        """
+        with self.db.get_connection() as conn:
+            cursor = conn.cursor()
+
+            cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+
+            # Get daily new apartments count
+            cursor.execute('''
+                SELECT DATE(first_seen) as date, COUNT(*) as count
+                FROM apartments
+                WHERE first_seen > ? AND status = 'active'
+                GROUP BY DATE(first_seen)
+                ORDER BY date
+            ''', (cutoff,))
+            new_apartments = {row['date']: row['count'] for row in cursor.fetchall()}
+
+            # Get daily price changes count
+            cursor.execute('''
+                SELECT DATE(recorded_at) as date, COUNT(DISTINCT apartment_id) as count
+                FROM price_history
+                WHERE recorded_at > ?
+                GROUP BY DATE(recorded_at)
+                ORDER BY date
+            ''', (cutoff,))
+            price_changes = {row['date']: row['count'] for row in cursor.fetchall()}
+
+            # Generate daily stats for all days in the period
+            daily_stats = []
+            for i in range(days):
+                date = (datetime.now() - timedelta(days=days-i-1)).date().isoformat()
+                daily_stats.append({
+                    'date': date,
+                    'new_count': new_apartments.get(date, 0),
+                    'price_changes': price_changes.get(date, 0)
+                })
+
+            return {
+                'period_days': days,
+                'daily_stats': daily_stats,
+                'generated_at': datetime.now().isoformat()
+            }
+
     def get_market_insights(self) -> Dict:
         """Generate market insights and statistics"""
         with self.db.get_connection() as conn:

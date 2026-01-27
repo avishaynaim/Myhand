@@ -6,6 +6,7 @@ import requests
 import time
 import os
 import json
+import threading
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -17,10 +18,13 @@ logger = logging.getLogger(__name__)
 class NotificationManager:
     """Manages notifications across multiple channels"""
 
-    def __init__(self, database, telegram_token: str = None, telegram_chat_id: str = None):
+    def __init__(self, database, telegram_bot=None):
         self.db = database
-        self.telegram_token = telegram_token or os.environ.get('TELEGRAM_BOT_TOKEN')
-        self.telegram_chat_id = telegram_chat_id or os.environ.get('TELEGRAM_CHAT_ID')
+        self.telegram_bot = telegram_bot
+
+        # Fallback for legacy single-user support
+        self.telegram_token = os.environ.get('TELEGRAM_BOT_TOKEN')
+        self.telegram_chat_id = os.environ.get('TELEGRAM_CHAT_ID')
 
         # Server identification
         self.server_name = os.environ.get('SERVER_NAME') or \
@@ -30,6 +34,10 @@ class NotificationManager:
 
         self.notification_queue: List[Dict] = []
         self.daily_notifications: List[Dict] = []  # Collected for daily digest
+
+        # Thread safety locks
+        self._queue_lock = threading.Lock()
+        self._daily_lock = threading.Lock()
 
         # Settings
         self.instant_notifications = True
@@ -66,7 +74,7 @@ class NotificationManager:
         # Calculate price per sqm if available
         sqm = apt.get('sqm')
         price_per_sqm = ""
-        if sqm and price:
+        if sqm and sqm > 0 and price:
             pps = price / sqm
             price_per_sqm = f"\n💵 <b>מחיר למ\"ר:</b> ₪{pps:,.0f}"
 
@@ -286,51 +294,73 @@ class NotificationManager:
             return False
 
     def notify_new_apartment(self, apt: Dict):
-        """Send notification for new apartment"""
+        """Send notification for new apartment to all active users"""
         if not self.should_notify(apt, 'new'):
             return
 
-        message = self.format_new_apartment_message(apt)
-
-        if self.instant_notifications:
+        # Multi-user notification via TelegramBot
+        if self.telegram_bot and self.instant_notifications:
+            try:
+                self.telegram_bot.notify_new_apartment(apt)
+            except Exception as e:
+                logger.error(f"Error sending multi-user notification: {e}", exc_info=True)
+                # Fallback to legacy single-user notification
+                message = self.format_new_apartment_message(apt)
+                self.send_telegram_message(message)
+        elif self.instant_notifications:
+            # Legacy single-user notification
+            message = self.format_new_apartment_message(apt)
             self.send_telegram_message(message)
 
-        # Store for daily digest
-        self.daily_notifications.append({
-            'type': 'new',
-            'apartment': apt,
-            'timestamp': datetime.now().isoformat()
-        })
+        # Store for daily digest (thread-safe)
+        with self._daily_lock:
+            self.daily_notifications.append({
+                'type': 'new',
+                'apartment': apt,
+                'timestamp': datetime.now().isoformat()
+            })
 
     def notify_price_change(self, apt: Dict, old_price: int, new_price: int):
-        """Send notification for price change"""
+        """Send notification for price change to all active users"""
         if not self.should_notify(apt, 'price_change'):
             return
 
-        message = self.format_price_change_message(apt, old_price, new_price)
-
-        if self.instant_notifications:
+        # Multi-user notification via TelegramBot
+        if self.telegram_bot and self.instant_notifications:
+            try:
+                self.telegram_bot.notify_price_change(apt, old_price)
+            except Exception as e:
+                logger.error(f"Error sending multi-user notification: {e}", exc_info=True)
+                # Fallback to legacy single-user notification
+                message = self.format_price_change_message(apt, old_price, new_price)
+                self.send_telegram_message(message)
+        elif self.instant_notifications:
+            # Legacy single-user notification
+            message = self.format_price_change_message(apt, old_price, new_price)
             self.send_telegram_message(message)
 
-        # Store for daily digest
-        self.daily_notifications.append({
-            'type': 'price_change',
-            'apartment': apt,
-            'old_price': old_price,
-            'new_price': new_price,
-            'change': new_price - old_price,
-            'change_pct': ((new_price - old_price) / old_price) * 100 if old_price else 0,
-            'timestamp': datetime.now().isoformat()
-        })
+        # Store for daily digest (thread-safe)
+        with self._daily_lock:
+            self.daily_notifications.append({
+                'type': 'price_change',
+                'apartment': apt,
+                'old_price': old_price,
+                'new_price': new_price,
+                'change': new_price - old_price,
+                'change_pct': ((new_price - old_price) / old_price) * 100 if old_price else 0,
+                'timestamp': datetime.now().isoformat()
+            })
 
     def notify_removed(self, apt: Dict):
         """Send notification for removed apartment (optional - can be noisy)"""
         # Usually we don't send instant notifications for removed apartments
-        self.daily_notifications.append({
-            'type': 'removed',
-            'apartment': apt,
-            'timestamp': datetime.now().isoformat()
-        })
+        # Store for daily digest (thread-safe)
+        with self._daily_lock:
+            self.daily_notifications.append({
+                'type': 'removed',
+                'apartment': apt,
+                'timestamp': datetime.now().isoformat()
+            })
 
     def send_batch_notifications(self, new_apartments: List[Dict], price_changes: List[Dict]):
         """Send batch notifications efficiently"""
@@ -369,10 +399,11 @@ class NotificationManager:
         if summary and summary.get('summary_sent'):
             return
 
-        # Get today's data
-        new_apartments = [n['apartment'] for n in self.daily_notifications if n['type'] == 'new']
-        price_changes = [n for n in self.daily_notifications if n['type'] == 'price_change']
-        removed = [n['apartment'] for n in self.daily_notifications if n['type'] == 'removed']
+        # Get today's data (thread-safe)
+        with self._daily_lock:
+            new_apartments = [n['apartment'] for n in self.daily_notifications if n['type'] == 'new']
+            price_changes = [n for n in self.daily_notifications if n['type'] == 'price_change']
+            removed = [n['apartment'] for n in self.daily_notifications if n['type'] == 'removed']
 
         if not new_apartments and not price_changes and not removed:
             return
@@ -382,7 +413,8 @@ class NotificationManager:
 
         if success:
             self.db.mark_summary_sent(today)
-            self.daily_notifications.clear()
+            with self._daily_lock:
+                self.daily_notifications.clear()
 
     def check_daily_digest_time(self):
         """Check if it's time to send daily digest"""

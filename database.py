@@ -5,6 +5,7 @@ Handles persistent storage for apartments, price history, settings, favorites
 import sqlite3
 import json
 import os
+import threading
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 from contextlib import contextmanager
@@ -16,6 +17,7 @@ logger = logging.getLogger(__name__)
 class Database:
     def __init__(self, db_path: str = "yad2_monitor.db"):
         self.db_path = db_path
+        self._local = threading.local()  # Thread-local storage for connections
         self._init_wal_mode()
         self.init_database()
 
@@ -28,21 +30,40 @@ class Database:
 
     @contextmanager
     def get_connection(self):
-        conn = sqlite3.connect(
-            self.db_path,
-            timeout=30.0,  # Wait up to 30 seconds for lock
-            check_same_thread=False  # Allow access from different threads
-        )
-        conn.row_factory = sqlite3.Row
-        conn.execute('PRAGMA busy_timeout=30000')
+        """
+        Get a thread-local database connection.
+        Each thread gets its own connection for thread safety.
+        """
+        # Check if this thread already has a connection
+        if not hasattr(self._local, 'conn') or self._local.conn is None:
+            self._local.conn = sqlite3.connect(
+                self.db_path,
+                timeout=30.0,  # Wait up to 30 seconds for lock
+                # Note: check_same_thread=True (default) for safety
+            )
+            self._local.conn.row_factory = sqlite3.Row
+            self._local.conn.execute('PRAGMA busy_timeout=30000')
+
+        conn = self._local.conn
         try:
             yield conn
             conn.commit()
         except Exception as e:
             conn.rollback()
             raise e
-        finally:
-            conn.close()
+        # Note: We don't close the connection here since it's reused per thread
+        # Connections are closed when threads terminate or via explicit cleanup
+
+    def close_connection(self):
+        """Close the connection for the current thread."""
+        if hasattr(self._local, 'conn') and self._local.conn is not None:
+            try:
+                self._local.conn.close()
+                logger.debug("Closed database connection for current thread")
+            except Exception as e:
+                logger.warning(f"Error closing database connection: {e}")
+            finally:
+                self._local.conn = None
 
     def init_database(self):
         """Initialize all database tables"""
@@ -177,6 +198,76 @@ class Database:
                 )
             ''')
 
+            # Telegram users table for multi-user support
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS telegram_users (
+                    chat_id TEXT PRIMARY KEY,
+                    username TEXT,
+                    first_name TEXT,
+                    last_name TEXT,
+                    language_code TEXT DEFAULT 'he',
+                    is_active INTEGER DEFAULT 1,
+                    is_paused INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_interaction TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
+            # User preferences table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS user_preferences (
+                    chat_id TEXT PRIMARY KEY,
+                    instant_notifications INTEGER DEFAULT 1,
+                    daily_digest INTEGER DEFAULT 1,
+                    digest_hour INTEGER DEFAULT 20,
+                    notification_types TEXT DEFAULT 'new,price_drop',
+                    preferences_json TEXT,
+                    FOREIGN KEY (chat_id) REFERENCES telegram_users(chat_id)
+                )
+            ''')
+
+            # User-specific favorites (replaces old favorites table)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS user_favorites (
+                    chat_id TEXT NOT NULL,
+                    apartment_id TEXT NOT NULL,
+                    notes TEXT,
+                    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (chat_id, apartment_id),
+                    FOREIGN KEY (chat_id) REFERENCES telegram_users(chat_id),
+                    FOREIGN KEY (apartment_id) REFERENCES apartments(id)
+                )
+            ''')
+
+            # User-specific ignored apartments
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS user_ignored (
+                    chat_id TEXT NOT NULL,
+                    apartment_id TEXT NOT NULL,
+                    reason TEXT,
+                    ignored_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (chat_id, apartment_id),
+                    FOREIGN KEY (chat_id) REFERENCES telegram_users(chat_id),
+                    FOREIGN KEY (apartment_id) REFERENCES apartments(id)
+                )
+            ''')
+
+            # User-specific filters
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS user_filters (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    filter_type TEXT NOT NULL,
+                    min_value REAL,
+                    max_value REAL,
+                    text_value TEXT,
+                    is_active INTEGER DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (chat_id) REFERENCES telegram_users(chat_id)
+                )
+            ''')
+
             # Create indexes
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_apartments_price ON apartments(price)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_apartments_location ON apartments(location)')
@@ -184,8 +275,292 @@ class Database:
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_price_history_apt ON price_history(apartment_id)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_price_history_date ON price_history(recorded_at)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_scrape_logs_type ON scrape_logs(event_type)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_favorites_chat ON user_favorites(chat_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_favorites_apt ON user_favorites(apartment_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_ignored_chat ON user_ignored(chat_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_filters_chat ON user_filters(chat_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_telegram_users_active ON telegram_users(is_active)')
 
             logger.info(f"Database initialized at {self.db_path}")
+
+            # Migrate data from old favorites table to new user_favorites table
+            self._migrate_to_multi_user(cursor)
+
+    def _migrate_to_multi_user(self, cursor):
+        """Migrate existing single-user data to multi-user schema"""
+        try:
+            # Check if old favorites table exists and has data
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='favorites'")
+            if cursor.fetchone():
+                cursor.execute("SELECT COUNT(*) FROM favorites")
+                old_count = cursor.fetchone()[0]
+
+                if old_count > 0:
+                    # Get the default chat ID from environment
+                    import os
+                    default_chat_id = os.environ.get('TELEGRAM_CHAT_ID')
+
+                    if default_chat_id:
+                        # Create default user if not exists
+                        cursor.execute('''
+                            INSERT OR IGNORE INTO telegram_users (chat_id, first_name, is_active)
+                            VALUES (?, 'Default User', 1)
+                        ''', (default_chat_id,))
+
+                        # Migrate favorites
+                        cursor.execute('''
+                            INSERT OR IGNORE INTO user_favorites (chat_id, apartment_id, notes, added_at)
+                            SELECT ?, apartment_id, notes, added_at
+                            FROM favorites
+                        ''', (default_chat_id,))
+
+                        # Migrate ignored apartments
+                        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='ignored'")
+                        if cursor.fetchone():
+                            cursor.execute('''
+                                INSERT OR IGNORE INTO user_ignored (chat_id, apartment_id, reason, ignored_at)
+                                SELECT ?, apartment_id, reason, ignored_at
+                                FROM ignored
+                            ''', (default_chat_id,))
+
+                        logger.info(f"Migrated {old_count} favorites to user {default_chat_id}")
+
+                        # Optionally drop old tables after successful migration
+                        # cursor.execute('DROP TABLE IF EXISTS favorites')
+                        # cursor.execute('DROP TABLE IF EXISTS ignored')
+                    else:
+                        logger.warning("TELEGRAM_CHAT_ID not set - skipping favorites migration")
+        except Exception as e:
+            logger.error(f"Error during multi-user migration: {e}", exc_info=True)
+
+    # ============ User Management Methods ============
+
+    def add_or_update_user(self, chat_id: str, username: str = None, first_name: str = None, last_name: str = None, language_code: str = 'he'):
+        """Add or update a Telegram user"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO telegram_users (chat_id, username, first_name, last_name, language_code, last_interaction)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(chat_id) DO UPDATE SET
+                    username = excluded.username,
+                    first_name = excluded.first_name,
+                    last_name = excluded.last_name,
+                    language_code = excluded.language_code,
+                    last_interaction = CURRENT_TIMESTAMP
+            ''', (chat_id, username, first_name, last_name, language_code))
+
+            # Create default preferences if not exists
+            cursor.execute('''
+                INSERT OR IGNORE INTO user_preferences (chat_id)
+                VALUES (?)
+            ''', (chat_id,))
+
+    def get_user(self, chat_id: str) -> Optional[Dict]:
+        """Get user information"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM telegram_users WHERE chat_id = ?', (chat_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def get_all_active_users(self) -> List[Dict]:
+        """Get all active users"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT * FROM telegram_users
+                WHERE is_active = 1 AND is_paused = 0
+                ORDER BY last_interaction DESC
+            ''')
+            return [dict(row) for row in cursor.fetchall()]
+
+    def pause_user_notifications(self, chat_id: str, paused: bool = True):
+        """Pause or resume notifications for a user"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE telegram_users
+                SET is_paused = ?
+                WHERE chat_id = ?
+            ''', (1 if paused else 0, chat_id))
+
+    def get_user_preferences(self, chat_id: str) -> Dict:
+        """Get user preferences"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM user_preferences WHERE chat_id = ?', (chat_id,))
+            row = cursor.fetchone()
+            if row:
+                return dict(row)
+            else:
+                # Return defaults
+                return {
+                    'chat_id': chat_id,
+                    'instant_notifications': 1,
+                    'daily_digest': 1,
+                    'digest_hour': 20,
+                    'notification_types': 'new,price_drop'
+                }
+
+    def update_user_preferences(self, chat_id: str, **kwargs):
+        """Update user preferences"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            fields = []
+            values = []
+            for key, value in kwargs.items():
+                if key in ['instant_notifications', 'daily_digest', 'digest_hour', 'notification_types', 'preferences_json']:
+                    fields.append(f"{key} = ?")
+                    values.append(value)
+
+            if fields:
+                values.append(chat_id)
+                cursor.execute(f'''
+                    INSERT INTO user_preferences (chat_id, {', '.join(kwargs.keys())})
+                    VALUES (?, {', '.join(['?'] * len(kwargs))})
+                    ON CONFLICT(chat_id) DO UPDATE SET {', '.join(fields)}
+                ''', values + [chat_id] + values)
+
+    # ============ User Favorites Methods ============
+
+    def add_user_favorite(self, chat_id: str, apt_id: str, notes: str = None):
+        """Add apartment to user's favorites"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT OR REPLACE INTO user_favorites (chat_id, apartment_id, notes)
+                VALUES (?, ?, ?)
+            ''', (chat_id, apt_id, notes))
+
+    def remove_user_favorite(self, chat_id: str, apt_id: str):
+        """Remove from user's favorites"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                DELETE FROM user_favorites
+                WHERE chat_id = ? AND apartment_id = ?
+            ''', (chat_id, apt_id))
+
+    def get_user_favorites(self, chat_id: str) -> List[Dict]:
+        """Get user's favorites with apartment details"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT a.*, f.notes, f.added_at as favorited_at
+                FROM apartments a
+                JOIN user_favorites f ON a.id = f.apartment_id
+                WHERE f.chat_id = ?
+                ORDER BY f.added_at DESC
+            ''', (chat_id,))
+            return [dict(row) for row in cursor.fetchall()]
+
+    def is_user_favorite(self, chat_id: str, apt_id: str) -> bool:
+        """Check if apartment is in user's favorites"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT 1 FROM user_favorites
+                WHERE chat_id = ? AND apartment_id = ?
+            ''', (chat_id, apt_id))
+            return cursor.fetchone() is not None
+
+    def add_user_ignored(self, chat_id: str, apt_id: str, reason: str = None):
+        """Add apartment to user's ignored list"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT OR REPLACE INTO user_ignored (chat_id, apartment_id, reason)
+                VALUES (?, ?, ?)
+            ''', (chat_id, apt_id, reason))
+
+    def is_user_ignored(self, chat_id: str, apt_id: str) -> bool:
+        """Check if apartment is in user's ignored list"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT 1 FROM user_ignored
+                WHERE chat_id = ? AND apartment_id = ?
+            ''', (chat_id, apt_id))
+            return cursor.fetchone() is not None
+
+    def get_user_filters(self, chat_id: str, active_only: bool = True) -> List[Dict]:
+        """Get user's filters"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            if active_only:
+                cursor.execute('''
+                    SELECT * FROM user_filters
+                    WHERE chat_id = ? AND is_active = 1
+                    ORDER BY created_at DESC
+                ''', (chat_id,))
+            else:
+                cursor.execute('''
+                    SELECT * FROM user_filters
+                    WHERE chat_id = ?
+                    ORDER BY created_at DESC
+                ''', (chat_id,))
+            return [dict(row) for row in cursor.fetchall()]
+
+    def add_user_filter(self, chat_id: str, name: str, filter_type: str, min_value=None, max_value=None, text_value=None):
+        """Add a filter for user"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO user_filters (chat_id, name, filter_type, min_value, max_value, text_value)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (chat_id, name, filter_type, min_value, max_value, text_value))
+
+    def remove_user_filter(self, chat_id: str, filter_id: int):
+        """Remove user's filter"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                DELETE FROM user_filters
+                WHERE chat_id = ? AND id = ?
+            ''', (chat_id, filter_id))
+
+    def toggle_user_filter(self, chat_id: str, filter_id: int, is_active: bool):
+        """Toggle user's filter active state"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE user_filters
+                SET is_active = ?
+                WHERE chat_id = ? AND id = ?
+            ''', (1 if is_active else 0, chat_id, filter_id))
+
+    def apartment_matches_user_filters(self, chat_id: str, apartment: Dict) -> bool:
+        """Check if apartment matches user's active filters"""
+        filters = self.get_user_filters(chat_id, active_only=True)
+        if not filters:
+            return True  # No filters means all apartments match
+
+        for f in filters:
+            filter_type = f['filter_type']
+            if filter_type == 'price':
+                if f['min_value'] and apartment.get('price', 0) < f['min_value']:
+                    return False
+                if f['max_value'] and apartment.get('price', 0) > f['max_value']:
+                    return False
+            elif filter_type == 'rooms':
+                if f['min_value'] and apartment.get('rooms', 0) < f['min_value']:
+                    return False
+                if f['max_value'] and apartment.get('rooms', 0) > f['max_value']:
+                    return False
+            elif filter_type == 'sqm':
+                if f['min_value'] and apartment.get('sqm', 0) < f['min_value']:
+                    return False
+                if f['max_value'] and apartment.get('sqm', 0) > f['max_value']:
+                    return False
+            elif filter_type == 'city' and f['text_value']:
+                if apartment.get('city', '').lower() != f['text_value'].lower():
+                    return False
+            elif filter_type == 'neighborhood' and f['text_value']:
+                if apartment.get('neighborhood', '').lower() != f['text_value'].lower():
+                    return False
+
+        return True
 
     # ============ Apartment Methods ============
 

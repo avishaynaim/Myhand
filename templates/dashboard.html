@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Yad2 Monitor Dashboard</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <h1>🏠 Yad2 Monitor Dashboard</h1>
+
+        <div class="top-nav">
+            <a href="/endpoints" class="nav-btn">📋 All Endpoints</a>
+            <a href="/health" class="nav-btn">💚 Health Status</a>
+            <a href="/api/apartments" class="nav-btn">🏢 Apartments API</a>
+            <a href="/api/stats" class="nav-btn">📊 Stats API</a>
+        </div>
+
+        <div class="stats-grid" id="stats">
+            <div class="stat-card">
+                <div class="stat-value" id="total-apartments">-</div>
+                <div class="stat-label">דירות פעילות</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="avg-price">-</div>
+                <div class="stat-label">מחיר ממוצע</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="new-today">-</div>
+                <div class="stat-label">חדשות היום</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="price-changes">-</div>
+                <div class="stat-label">שינויי מחיר</div>
+            </div>
+        </div>
+
+        <div class="tabs">
+            <button class="tab active" onclick="showTab('apartments')">דירות</button>
+            <button class="tab" onclick="showTab('favorites')">מועדפים</button>
+            <button class="tab" onclick="showTab('price-drops')">ירידות מחיר</button>
+            <button class="tab" onclick="showTab('analytics')">אנליטיקה</button>
+        </div>
+
+        <div id="apartments-tab" class="card">
+            <h2>🏠 דירות פעילות</h2>
+
+            <div class="search-bar">
+                <input type="text" id="search-input" placeholder="🔍 חיפוש לפי כתובת, שכונה או עיר..." oninput="handleSearch()">
+                <button class="btn-clear" id="clear-search" onclick="clearSearch()" style="display: none;">✕</button>
+            </div>
+
+            <div class="filters">
+                <div class="filter-group">
+                    <label>מחיר מינימום</label>
+                    <input type="number" id="min-price" placeholder="0" onchange="filterApartments()">
+                </div>
+                <div class="filter-group">
+                    <label>מחיר מקסימום</label>
+                    <input type="number" id="max-price" placeholder="999999" onchange="filterApartments()">
+                </div>
+                <div class="filter-group">
+                    <label>חדרים מינימום</label>
+                    <input type="number" id="min-rooms" placeholder="1" step="0.5" onchange="filterApartments()">
+                </div>
+                <div class="filter-group">
+                    <label>חדרים מקסימום</label>
+                    <input type="number" id="max-rooms" placeholder="10" step="0.5" onchange="filterApartments()">
+                </div>
+                <div class="filter-group">
+                    <label>מ"ר מינימום</label>
+                    <input type="number" id="min-sqm" placeholder="0" onchange="filterApartments()">
+                </div>
+                <div class="filter-group">
+                    <label>מ"ר מקסימום</label>
+                    <input type="number" id="max-sqm" placeholder="500" onchange="filterApartments()">
+                </div>
+                <div class="filter-group">
+                    <label>עיר</label>
+                    <input type="text" id="city-filter" list="cities-list" placeholder="כל הערים" onchange="filterApartments()">
+                    <datalist id="cities-list"></datalist>
+                </div>
+                <div class="filter-group">
+                    <label>שכונה</label>
+                    <input type="text" id="neighborhood-filter" list="neighborhoods-list" placeholder="כל השכונות" onchange="filterApartments()">
+                    <datalist id="neighborhoods-list"></datalist>
+                </div>
+                <div class="filter-group">
+                    <label>מיון</label>
+                    <select id="sort-by" onchange="filterApartments()">
+                        <option value="date">תאריך (חדשים ראשון)</option>
+                        <option value="price-asc">מחיר (נמוך לגבוה)</option>
+                        <option value="price-desc">מחיר (גבוה לנמוך)</option>
+                        <option value="rooms-asc">חדרים (מעט לרבה)</option>
+                        <option value="rooms-desc">חדרים (רבה למעט)</option>
+                        <option value="sqm-desc">מ"ר (גדול לקטן)</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="filter-actions">
+                <button class="btn btn-secondary" onclick="saveFilters()">שמור פילטר</button>
+                <button class="btn btn-secondary" onclick="loadFilters()">טען פילטר</button>
+                <button class="btn btn-secondary" onclick="clearFilters()">נקה הכל</button>
+                <span class="results-count" id="results-count"></span>
+            </div>
+
+            <ul class="apartment-list" id="apartment-list">
+                <li class="loading">טוען...</li>
+            </ul>
+        </div>
+
+        <div id="favorites-tab" class="card hidden">
+            <h2>⭐ מועדפים</h2>
+            <ul class="apartment-list" id="favorites-list">
+                <li class="loading">טוען...</li>
+            </ul>
+        </div>
+
+        <div id="price-drops-tab" class="card hidden">
+            <h2>📉 ירידות מחיר אחרונות</h2>
+            <ul class="apartment-list" id="price-drops-list">
+                <li class="loading">טוען...</li>
+            </ul>
+        </div>
+
+        <div id="analytics-tab" class="card hidden">
+            <h2>📊 אנליטיקה</h2>
+            <div id="analytics-content">
+                <div class="loading">טוען...</div>
+            </div>
+            <div class="charts-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 20px; margin-top: 20px;">
+                <div class="chart-card">
+                    <h3>התפלגות מחירים</h3>
+                    <canvas id="price-distribution-chart"></canvas>
+                </div>
+                <div class="chart-card">
+                    <h3>שכונות מובילות</h3>
+                    <canvas id="neighborhoods-chart"></canvas>
+                </div>
+                <div class="chart-card">
+                    <h3>מגמות שוק (7 ימים)</h3>
+                    <canvas id="market-trends-chart"></canvas>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <button class="theme-toggle" id="theme-toggle" onclick="toggleTheme()" title="החלף ערכת נושא">🌙</button>
+    <div class="toast-container" id="toast-container"></div>
+
+    <script src="{{ url_for('static', filename='js/charts.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/toast.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+</body>
+</html>

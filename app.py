@@ -142,10 +142,19 @@ class Yad2Monitor:
         self.proxy_rotator = ProxyRotator(self.proxy_manager)
         self.analytics = MarketAnalytics(self.db)
 
-        # Telegram config
+        # Telegram bot for multi-user support
         telegram_token = os.environ.get("TELEGRAM_BOT_TOKEN")
         telegram_chat_id = os.environ.get("TELEGRAM_CHAT_ID")
-        self.notifier = NotificationManager(self.db, telegram_token, telegram_chat_id)
+
+        try:
+            from telegram_bot import TelegramBot
+            self.telegram_bot = TelegramBot(telegram_token, self.db)
+            logger.info("✓ Telegram bot initialized (multi-user mode)")
+        except Exception as e:
+            logger.warning(f"Failed to initialize Telegram bot: {e}")
+            self.telegram_bot = None
+
+        self.notifier = NotificationManager(self.db, telegram_bot=self.telegram_bot)
 
         # Load search URLs
         self.search_urls = self._load_search_urls()
@@ -560,11 +569,26 @@ class Yad2Monitor:
     def start_web_server(self, port: int = 5000):
         """Start web server in background thread"""
         def run():
-            run_web_server(self.db, self.analytics, port=port, debug=False)
+            run_web_server(self.db, self.analytics, self.telegram_bot, port=port, debug=False)
 
         self.web_thread = threading.Thread(target=run, daemon=True)
         self.web_thread.start()
         logger.info(f"🌐 Web server started on port {port}")
+
+        # Set Telegram webhook if bot is configured
+        if self.telegram_bot:
+            webhook_url = os.environ.get('TELEGRAM_WEBHOOK_URL')
+            if webhook_url:
+                try:
+                    success = self.telegram_bot.set_webhook(f"{webhook_url}/telegram/webhook")
+                    if success:
+                        logger.info(f"✓ Telegram webhook set: {webhook_url}/telegram/webhook")
+                    else:
+                        logger.warning("Failed to set Telegram webhook")
+                except Exception as e:
+                    logger.error(f"Error setting Telegram webhook: {e}", exc_info=True)
+            else:
+                logger.info("TELEGRAM_WEBHOOK_URL not set - webhook not configured (use polling or set webhook manually)")
 
     def run_once(self):
         """Run a single scrape cycle"""

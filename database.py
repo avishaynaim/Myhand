@@ -33,6 +33,7 @@ class Database:
         """
         Get a thread-local database connection.
         Each thread gets its own connection for thread safety.
+        WAL mode allows concurrent reads with a single writer.
         """
         # Check if this thread already has a connection
         if not hasattr(self._local, 'conn') or self._local.conn is None:
@@ -611,10 +612,13 @@ class Database:
                 json.dumps(apt, ensure_ascii=False)
             ))
 
-            # Record price if changed or new
+            # Record price if changed or new (inline to avoid nested connection)
             if is_new or price_changed:
                 if apt.get('price'):
-                    self.add_price_history(apt['id'], apt['price'])
+                    cursor.execute(
+                        'INSERT INTO price_history (apartment_id, price) VALUES (?, ?)',
+                        (apt['id'], apt['price'])
+                    )
 
             return apt['id'], is_new
 

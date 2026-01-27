@@ -438,6 +438,7 @@ def create_web_app(database, analytics=None):
 
     db = database
     market_analytics = analytics
+    app_start_time = datetime.now()
 
     # ============ Dashboard Routes ============
 
@@ -448,11 +449,50 @@ def create_web_app(database, analytics=None):
 
     @app.route('/health')
     def health_check():
-        """Health check endpoint for monitoring"""
+        """Health check endpoint with detailed system status"""
+        now = datetime.now()
+        uptime = now - app_start_time
+        uptime_str = f"{uptime.days}d {uptime.seconds // 3600}h {(uptime.seconds % 3600) // 60}m"
+
+        # Get basic stats
+        apartments = db.get_all_apartments() if db else []
+        prices = [a['price'] for a in apartments if a.get('price')]
+
+        # Get daily summary
+        daily_summary = db.get_daily_summary() if db else None
+
+        # Get scrape stats
+        scrape_stats = db.get_scrape_stats(hours=24) if db else {}
+
+        # Get search URLs count
+        search_urls = db.get_search_urls() if db else []
+
+        # Get favorites count
+        favorites = db.get_favorites() if db else []
+
         return jsonify({
             'status': 'healthy',
-            'timestamp': datetime.now().isoformat(),
-            'database': 'connected' if db else 'not configured'
+            'timestamp': now.isoformat(),
+            'uptime': uptime_str,
+            'uptime_seconds': int(uptime.total_seconds()),
+            'database': 'connected' if db else 'not configured',
+            'listings': {
+                'total_active': len(apartments),
+                'avg_price': sum(prices) // len(prices) if prices else 0,
+                'min_price': min(prices) if prices else 0,
+                'max_price': max(prices) if prices else 0,
+                'favorites': len(favorites)
+            },
+            'today': {
+                'new_apartments': daily_summary.get('new_apartments', 0) if daily_summary else 0,
+                'price_drops': daily_summary.get('price_drops', 0) if daily_summary else 0,
+                'price_increases': daily_summary.get('price_increases', 0) if daily_summary else 0,
+                'removed': daily_summary.get('removed', 0) if daily_summary else 0
+            },
+            'scraping': {
+                'search_urls_active': len(search_urls),
+                'last_24h': scrape_stats
+            }
         })
 
     # ============ API Routes ============

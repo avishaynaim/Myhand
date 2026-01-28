@@ -62,7 +62,7 @@ EMBEDDED_DASHBOARD_HTML = '''<!DOCTYPE html>
         <div class="stats">
             <div class="stat"><div class="stat-value" id="total">-</div><div class="stat-label">דירות פעילות</div></div>
             <div class="stat"><div class="stat-value" id="avg-price">-</div><div class="stat-label">מחיר ממוצע</div></div>
-            <div class="stat"><div class="stat-value" id="new-today">-</div><div class="stat-label">חדשות היום</div></div>
+            <div class="stat"><div class="stat-value" id="new-today">-</div><div class="stat-label">חדשות (48 שעות)</div></div>
             <div class="stat"><div class="stat-value" id="price-drops">-</div><div class="stat-label">ירידות מחיר</div></div>
         </div>
         <div class="tabs">
@@ -516,7 +516,27 @@ def create_web_app(database, analytics=None, telegram_bot=None):
         apartments = db.get_all_apartments() if db else []
         prices = [a['price'] for a in apartments if a.get('price')]
 
-        # Get daily summary
+        # Calculate apartments from last 2 days (48 hours)
+        from datetime import timedelta
+        two_days_ago = now - timedelta(days=2)
+        new_apartments_last_2_days = 0
+
+        if apartments:
+            for apt in apartments:
+                first_seen = apt.get('first_seen')
+                if first_seen:
+                    try:
+                        # Parse the first_seen datetime
+                        apt_date = datetime.fromisoformat(first_seen.replace('Z', '+00:00'))
+                        # Remove timezone info for comparison
+                        if apt_date.tzinfo:
+                            apt_date = apt_date.replace(tzinfo=None)
+                        if apt_date >= two_days_ago:
+                            new_apartments_last_2_days += 1
+                    except (ValueError, AttributeError):
+                        pass
+
+        # Get daily summary for other stats
         daily_summary = db.get_daily_summary() if db else None
 
         # Get scrape stats
@@ -542,7 +562,7 @@ def create_web_app(database, analytics=None, telegram_bot=None):
                 'favorites': len(favorites)
             },
             'today': {
-                'new_apartments': daily_summary.get('new_apartments', 0) if daily_summary else 0,
+                'new_apartments': new_apartments_last_2_days,  # Last 2 days instead of today
                 'price_drops': daily_summary.get('price_drops', 0) if daily_summary else 0,
                 'price_increases': daily_summary.get('price_increases', 0) if daily_summary else 0,
                 'removed': daily_summary.get('removed', 0) if daily_summary else 0

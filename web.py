@@ -517,23 +517,20 @@ def create_web_app(database, analytics=None, telegram_bot=None):
         prices = [a['price'] for a in apartments if a.get('price')]
 
         # Calculate apartments from last 2 days (48 hours)
+        # Using data_updated_at which is the update timestamp from Yad2 website (not DB timestamp)
         from datetime import timedelta
-        two_days_ago = now - timedelta(days=2)
+        two_days_ago_timestamp = int((now - timedelta(days=2)).timestamp())
         new_apartments_last_2_days = 0
 
         if apartments:
             for apt in apartments:
-                first_seen = apt.get('first_seen')
-                if first_seen:
+                data_updated_at = apt.get('data_updated_at')  # Unix timestamp from website HTML
+                if data_updated_at:
                     try:
-                        # Parse the first_seen datetime
-                        apt_date = datetime.fromisoformat(first_seen.replace('Z', '+00:00'))
-                        # Remove timezone info for comparison
-                        if apt_date.tzinfo:
-                            apt_date = apt_date.replace(tzinfo=None)
-                        if apt_date >= two_days_ago:
+                        # data_updated_at is a Unix timestamp (integer)
+                        if isinstance(data_updated_at, (int, float)) and data_updated_at >= two_days_ago_timestamp:
                             new_apartments_last_2_days += 1
-                    except (ValueError, AttributeError):
+                    except (ValueError, AttributeError, TypeError):
                         pass
 
         # Get daily summary for other stats

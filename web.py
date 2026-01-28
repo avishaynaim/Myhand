@@ -2,7 +2,7 @@
 Web Dashboard & REST API for Yad2 Monitor
 Flask-based dashboard with REST endpoints
 """
-from flask import Flask, jsonify, request, render_template, send_file
+from flask import Flask, jsonify, request, render_template, render_template_string, send_file
 from flask_cors import CORS
 from datetime import datetime
 import os

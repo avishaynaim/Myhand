@@ -8,6 +8,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy all Python modules
 COPY database.py .
+COPY database_postgres.py .
+COPY db_wrapper.py .
 COPY proxy_manager.py .
 COPY analytics.py .
 COPY notifications.py .

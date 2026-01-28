@@ -25,7 +25,7 @@ from typing import Dict, List, Optional, Tuple
 from concurrent.futures import ThreadPoolExecutor
 
 # Import our modules
-from database import Database
+from db_wrapper import get_database
 from proxy_manager import ProxyManager, ProxyRotator
 from analytics import MarketAnalytics
 from notifications import NotificationManager
@@ -174,8 +174,8 @@ class Yad2Monitor:
         logger.info("🚀 Initializing Enhanced Yad2Monitor")
 
         # Initialize database with persistent storage support
-        db_path = get_database_path()
-        self.db = Database(db_path)
+        # get_database() auto-detects PostgreSQL (DATABASE_URL) or SQLite
+        self.db = get_database()
 
         # Initialize components
         self.delay_manager = AdaptiveDelayManager(self.db)

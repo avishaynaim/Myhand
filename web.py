@@ -156,7 +156,71 @@ def create_web_app(database, analytics=None, telegram_bot=None):
     @app.route('/')
     def dashboard():
         """Serve the dashboard HTML"""
-        return render_template('dashboard.html')
+        try:
+            return render_template('dashboard.html')
+        except Exception as e:
+            logger.warning(f"Could not load dashboard.html template: {e}. Serving fallback HTML.")
+            # Fallback simple HTML if template not found
+            return render_template_string('''
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Yad2 Monitor - API</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 800px; margin: 50px auto; padding: 20px; background: #f5f5f5; }
+        h1 { color: #333; }
+        .card { background: white; padding: 20px; margin: 20px 0; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .endpoint { padding: 10px; margin: 10px 0; background: #f9f9f9; border-left: 4px solid #667eea; }
+        a { color: #667eea; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        code { background: #e8e8e8; padding: 2px 6px; border-radius: 3px; }
+    </style>
+</head>
+<body>
+    <h1>🏠 Yad2 Monitor API</h1>
+
+    <div class="card">
+        <h2>System Status</h2>
+        <p>✅ Application is running</p>
+        <p><a href="/health">View Health Status →</a></p>
+    </div>
+
+    <div class="card">
+        <h2>Quick Links</h2>
+        <div class="endpoint">
+            <strong><a href="/health">GET /health</a></strong><br>
+            System health check and statistics
+        </div>
+        <div class="endpoint">
+            <strong><a href="/api/apartments">GET /api/apartments</a></strong><br>
+            List all apartments (requires API key header: <code>X-API-Key</code>)
+        </div>
+        <div class="endpoint">
+            <strong><a href="/api/stats">GET /api/stats</a></strong><br>
+            Get market statistics (requires API key)
+        </div>
+        <div class="endpoint">
+            <strong><a href="/endpoints">GET /endpoints</a></strong><br>
+            View all available API endpoints
+        </div>
+    </div>
+
+    <div class="card">
+        <h2>Authentication</h2>
+        <p>Most endpoints require an API key. Include it in your requests:</p>
+        <p><code>X-API-Key: your_api_key_here</code></p>
+        <p>Or as a query parameter: <code>?api_key=your_api_key_here</code></p>
+    </div>
+
+    <div class="card">
+        <h2>Documentation</h2>
+        <p>For full documentation, visit the <a href="https://github.com/avishaynaim/Myhand">GitHub repository</a></p>
+    </div>
+</body>
+</html>
+''')
 
     @app.route('/endpoints')
     def list_endpoints():

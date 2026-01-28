@@ -444,53 +444,66 @@ class Yad2Monitor:
         return None
 
     def scrape_all_pages(self, base_url: str, max_pages: int = 50) -> Tuple[List[Dict], int]:
-        """Scrape pages with smart stop based on dataUpdatedAt"""
+        """Scrape pages with smart stop based on consecutive known listings"""
         logger.info(f"🔍 Starting smart scrape from {base_url}")
 
-        last_run_ts = self.delay_manager.get_last_run_timestamp()
-        if last_run_ts:
-            last_run_dt = datetime.fromtimestamp(last_run_ts / 1000)
-            logger.info(f"📅 Last run: {last_run_dt.strftime('%Y-%m-%d %H:%M:%S')}")
-        else:
-            logger.info("📅 First run - will scrape all pages")
+        CONSECUTIVE_KNOWN_THRESHOLD = 4  # Stop after N consecutive known listings
 
         current_run_ts = int(datetime.now().timestamp() * 1000)
         all_apartments = []
         pages_saved = 0
         page = 1
+        consecutive_known = 0
+
+        logger.info(f"📊 Stop strategy: Will stop after {CONSECUTIVE_KNOWN_THRESHOLD} consecutive known listings")
 
         while page <= max_pages:
             logger.info(f"{'=' * 50}")
-            logger.info(f"📄 Processing page {page}")
+            logger.info(f"📄 Processing page {page} (consecutive known: {consecutive_known}/{CONSECUTIVE_KNOWN_THRESHOLD})")
 
             html = self.fetch_page(base_url, page)
             if not html:
                 break
 
             soup = BeautifulSoup(html, 'html.parser')
-
-            # Check timestamps for smart stop
-            page_timestamps = self.extract_data_updated_at_from_page(soup)
-            if page_timestamps and last_run_ts:
-                max_ts = max(page_timestamps)
-                if max_ts < last_run_ts:
-                    pages_saved = max_pages - page
-                    logger.info(f"🛑 Smart stop: Page {page} has no new updates")
-                    logger.info(f"💾 Saved {pages_saved} page requests!")
-                    break
-
             h2_elements = self.find_apartment_elements(soup)
             if not h2_elements:
                 break
 
             parsed_count = 0
+            new_on_page = 0
+            known_on_page = 0
+
             for h2_elem in h2_elements:
                 apt = self.parse_apartment(h2_elem)
                 if apt and apt['price'] and apt['link']:
                     all_apartments.append(apt)
                     parsed_count += 1
 
-            logger.info(f"✅ Page {page}: parsed {parsed_count} apartments")
+                    # Check if apartment already exists in database
+                    existing = self.db.get_apartment(apt['id'])
+                    if existing:
+                        # Known listing
+                        consecutive_known += 1
+                        known_on_page += 1
+
+                        # Check if we've hit the threshold
+                        if consecutive_known >= CONSECUTIVE_KNOWN_THRESHOLD:
+                            pages_saved = max_pages - page
+                            logger.info(f"🛑 Smart stop: {consecutive_known} consecutive known listings reached!")
+                            logger.info(f"💾 Saved approximately {pages_saved} page requests!")
+                            # Update last run timestamp before returning
+                            self.delay_manager.set_last_run_timestamp(current_run_ts)
+                            logger.info(f"{'=' * 50}")
+                            logger.info(f"✅ Scraping complete: {len(all_apartments)} apartments from {page} pages")
+                            logger.info(f"📊 Last page: {new_on_page} new, {known_on_page} known")
+                            return all_apartments, pages_saved
+                    else:
+                        # New listing - reset counter
+                        consecutive_known = 0
+                        new_on_page += 1
+
+            logger.info(f"✅ Page {page}: {parsed_count} apartments ({new_on_page} new, {known_on_page} known)")
             page += 1
 
         # Update last run timestamp

@@ -13,6 +13,15 @@ from functools import wraps
 
 logger = logging.getLogger(__name__)
 
+# Import embedded dashboard HTML
+try:
+    from dashboard_embedded import get_dashboard_html
+    EMBEDDED_DASHBOARD_AVAILABLE = True
+    logger.info("Embedded dashboard module loaded successfully")
+except ImportError:
+    EMBEDDED_DASHBOARD_AVAILABLE = False
+    logger.warning("Embedded dashboard module not available")
+
 # Import authentication decorator
 try:
     from auth import require_api_key
@@ -156,12 +165,21 @@ def create_web_app(database, analytics=None, telegram_bot=None):
     @app.route('/')
     def dashboard():
         """Serve the dashboard HTML"""
+        # Priority 1: Use embedded dashboard (always works)
+        if EMBEDDED_DASHBOARD_AVAILABLE:
+            logger.info("Serving embedded dashboard")
+            return render_template_string(get_dashboard_html())
+
+        # Priority 2: Try template file
         try:
+            logger.info("Attempting to load dashboard.html template")
             return render_template('dashboard.html')
         except Exception as e:
-            logger.warning(f"Could not load dashboard.html template: {e}. Serving fallback HTML.")
-            # Fallback simple HTML if template not found
-            return render_template_string('''
+            logger.warning(f"Could not load dashboard.html template: {e}")
+
+        # Priority 3: Basic fallback
+        logger.warning("Serving basic fallback HTML")
+        return render_template_string('''
 <!DOCTYPE html>
 <html>
 <head>

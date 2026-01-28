@@ -86,7 +86,7 @@ def get_database_path():
 class AdaptiveDelayManager:
     """Analyzes historical scraping data and adapts delays to avoid blocks."""
 
-    def __init__(self, database: Database):
+    def __init__(self, database):
         self.db = database
         self.base_page_delay = (5, 15)
         self.base_cycle_delay = (60, 90)

@@ -43,6 +43,30 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def get_database_path():
+    """
+    Get the database path with persistent storage support.
+    Uses /data directory if it exists (Railway volume mount),
+    otherwise uses current directory.
+    """
+    # Check for explicit environment variable
+    db_path = os.environ.get('DATABASE_PATH')
+    if db_path:
+        return db_path
+
+    # Check for persistent volume mount at /data
+    data_dir = '/data'
+    if os.path.exists(data_dir) and os.path.isdir(data_dir):
+        db_file = os.path.join(data_dir, 'yad2_monitor.db')
+        logger.info(f"📁 Using persistent storage: {db_file}")
+        return db_file
+
+    # Default to current directory
+    db_file = 'yad2_monitor.db'
+    logger.info(f"📁 Using local storage: {db_file}")
+    return db_file
+
+
 class AdaptiveDelayManager:
     """Analyzes historical scraping data and adapts delays to avoid blocks."""
 
@@ -133,8 +157,9 @@ class Yad2Monitor:
     def __init__(self):
         logger.info("🚀 Initializing Enhanced Yad2Monitor")
 
-        # Initialize database
-        self.db = Database()
+        # Initialize database with persistent storage support
+        db_path = get_database_path()
+        self.db = Database(db_path)
 
         # Initialize components
         self.delay_manager = AdaptiveDelayManager(self.db)

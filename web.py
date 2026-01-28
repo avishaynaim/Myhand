@@ -54,7 +54,25 @@ except ImportError:
 
 def create_web_app(database, analytics=None, telegram_bot=None):
     """Create and configure Flask application"""
-    app = Flask(__name__)
+    # Get absolute paths for templates and static directories
+    base_dir = os.path.abspath(os.path.dirname(__file__))
+    template_dir = os.path.join(base_dir, 'templates')
+    static_dir = os.path.join(base_dir, 'static')
+
+    app = Flask(__name__,
+                template_folder=template_dir,
+                static_folder=static_dir)
+
+    # Log template and static paths for debugging
+    logger.info(f"Base directory: {base_dir}")
+    logger.info(f"Template directory: {template_dir} (exists: {os.path.exists(template_dir)})")
+    logger.info(f"Static directory: {static_dir} (exists: {os.path.exists(static_dir)})")
+
+    if os.path.exists(template_dir):
+        templates = os.listdir(template_dir)
+        logger.info(f"Templates found: {templates}")
+    else:
+        logger.error(f"Template directory not found! Looking in: {template_dir}")
 
     # Configure CORS securely
     allowed_origins = os.environ.get('ALLOWED_ORIGINS', '*').split(',')

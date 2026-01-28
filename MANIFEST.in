@@ -1,0 +1,6 @@
+include *.txt
+include *.md
+include *.json
+include Procfile
+recursive-include templates *
+recursive-include static *

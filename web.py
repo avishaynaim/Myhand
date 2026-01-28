@@ -32,7 +32,9 @@ EMBEDDED_DASHBOARD_HTML = '''<!DOCTYPE html>
         .nav a { padding: 10px 20px; background: var(--card); border: 2px solid var(--primary); border-radius: 8px; color: var(--primary); text-decoration: none; font-weight: 600; transition: all 0.3s; }
         .nav a:hover { background: var(--primary); color: white; }
         .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px; margin-bottom: 30px; }
-        .stat { background: var(--card); padding: 25px; border-radius: 12px; box-shadow: var(--shadow); text-align: center; }
+        .stat { background: var(--card); padding: 25px; border-radius: 12px; box-shadow: var(--shadow); text-align: center; cursor: pointer; transition: all 0.3s; border: 3px solid transparent; }
+        .stat:hover { transform: translateY(-5px); box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3); }
+        .stat.active { border-color: var(--primary); background: linear-gradient(135deg, var(--card) 0%, rgba(102, 126, 234, 0.1) 100%); }
         .stat-value { font-size: 2.5em; font-weight: bold; color: var(--primary); }
         .stat-label { color: #6c757d; margin-top: 10px; }
         .card { background: var(--card); padding: 30px; border-radius: 12px; box-shadow: var(--shadow); margin-bottom: 20px; }
@@ -60,10 +62,10 @@ EMBEDDED_DASHBOARD_HTML = '''<!DOCTYPE html>
             <a href="/api/stats">📊 Stats</a>
         </div>
         <div class="stats">
-            <div class="stat"><div class="stat-value" id="total">-</div><div class="stat-label">דירות פעילות</div></div>
-            <div class="stat"><div class="stat-value" id="avg-price">-</div><div class="stat-label">מחיר ממוצע</div></div>
-            <div class="stat"><div class="stat-value" id="new-today">-</div><div class="stat-label">חדשות (48 שעות)</div></div>
-            <div class="stat"><div class="stat-value" id="price-drops">-</div><div class="stat-label">ירידות מחיר</div></div>
+            <div class="stat" onclick="filterApartments('all')" data-filter="all"><div class="stat-value" id="total">-</div><div class="stat-label">דירות פעילות</div></div>
+            <div class="stat" onclick="filterApartments('avg-price')" data-filter="avg-price"><div class="stat-value" id="avg-price">-</div><div class="stat-label">מחיר ממוצע</div></div>
+            <div class="stat" onclick="filterApartments('new')" data-filter="new"><div class="stat-value" id="new-today">-</div><div class="stat-label">חדשות (48 שעות)</div></div>
+            <div class="stat" onclick="filterApartments('price-drops')" data-filter="price-drops"><div class="stat-value" id="price-drops">-</div><div class="stat-label">ירידות מחיר</div></div>
         </div>
         <div class="tabs">
             <button class="tab active" onclick="showTab('apartments')">דירות</button>
@@ -80,7 +82,166 @@ EMBEDDED_DASHBOARD_HTML = '''<!DOCTYPE html>
     </div>
     <button class="theme-btn" onclick="toggleTheme()" title="החלף ערכת נושא">🌙</button>
     <script>
-        let apartments=[];function toggleTheme(){const html=document.documentElement;const theme=html.getAttribute('data-theme')==='dark'?'light':'dark';html.setAttribute('data-theme',theme);localStorage.setItem('theme',theme);event.target.textContent=theme==='dark'?'☀️':'🌙';}function showTab(tab){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.querySelectorAll('[id$="-tab"]').forEach(t=>t.classList.add('hidden'));event.target.classList.add('active');document.getElementById(tab+'-tab').classList.remove('hidden');if(tab==='analytics')loadChart();}async function loadStats(){try{const res=await fetch('/health');const data=await res.json();document.getElementById('total').textContent=data.listings?.total_active||0;document.getElementById('avg-price').textContent=(data.listings?.avg_price||0).toLocaleString()+' ₪';document.getElementById('new-today').textContent=data.today?.new_apartments||0;document.getElementById('price-drops').textContent=data.today?.price_drops||0;}catch(e){console.error(e);}}async function loadApartments(){try{const res=await fetch('/api/apartments?limit=50');apartments=await res.json();renderApartments();}catch(e){document.getElementById('apartments-list').innerHTML='<p>Error loading apartments. Make sure to include API key in headers.</p>';}}function renderApartments(){const list=document.getElementById('apartments-list');if(!apartments.length){list.innerHTML='<p>No apartments found</p>';return;}list.innerHTML=apartments.map(apt=>`<div class="apartment"><h3>${apt.title||'N/A'}</h3><div class="apartment-details"><div class="detail"><strong>💰 מחיר:</strong> ${(apt.price||0).toLocaleString()} ₪</div><div class="detail"><strong>🛏️ חדרים:</strong> ${apt.rooms||'N/A'}</div><div class="detail"><strong>📐 מ"ר:</strong> ${apt.square_meters||'N/A'}</div><div class="detail"><strong>📍 עיר:</strong> ${apt.city||'N/A'}</div><div class="detail"><strong>🏘️ שכונה:</strong> ${apt.neighborhood||'N/A'}</div><div class="detail"><strong>📅 תאריך:</strong> ${new Date(apt.first_seen).toLocaleDateString('he-IL')}</div></div>${apt.link?`<a href="${apt.link}" target="_blank" style="color: var(--primary);">🔗 לינק למודעה</a>`:''}</div>`).join('');}async function loadChart(){if(!apartments.length)return;const ctx=document.getElementById('chart');const prices=apartments.map(a=>a.price).filter(p=>p>0);const avg=prices.reduce((a,b)=>a+b,0)/prices.length;new Chart(ctx,{type:'bar',data:{labels:['Min','Avg','Max'],datasets:[{label:'Price (₪)',data:[Math.min(...prices),avg,Math.max(...prices)],backgroundColor:['#10b981','#667eea','#ef4444']}]},options:{responsive:true,maintainAspectRatio:false}});}const theme=localStorage.getItem('theme')||'light';document.documentElement.setAttribute('data-theme',theme);document.querySelector('.theme-btn').textContent=theme==='dark'?'☀️':'🌙';loadStats();loadApartments();setInterval(loadStats,60000);
+        let apartments = [];
+        let allApartments = [];
+        let currentFilter = 'all';
+        let priceDropApartments = new Set();
+
+        function toggleTheme() {
+            const html = document.documentElement;
+            const theme = html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+            html.setAttribute('data-theme', theme);
+            localStorage.setItem('theme', theme);
+            event.target.textContent = theme === 'dark' ? '☀️' : '🌙';
+        }
+
+        function showTab(tab) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('[id$="-tab"]').forEach(t => t.classList.add('hidden'));
+            event.target.classList.add('active');
+            document.getElementById(tab + '-tab').classList.remove('hidden');
+            if (tab === 'analytics') loadChart();
+        }
+
+        function filterApartments(filter) {
+            currentFilter = filter;
+
+            // Update active state on stat cards
+            document.querySelectorAll('.stat').forEach(stat => {
+                if (stat.getAttribute('data-filter') === filter) {
+                    stat.classList.add('active');
+                } else {
+                    stat.classList.remove('active');
+                }
+            });
+
+            // Filter and render
+            renderApartments();
+        }
+
+        async function loadStats() {
+            try {
+                const res = await fetch('/health');
+                const data = await res.json();
+                document.getElementById('total').textContent = data.listings?.total_active || 0;
+                document.getElementById('avg-price').textContent = (data.listings?.avg_price || 0).toLocaleString() + ' ₪';
+                document.getElementById('new-today').textContent = data.today?.new_apartments || 0;
+                document.getElementById('price-drops').textContent = data.today?.price_drops || 0;
+            } catch (e) {
+                console.error(e);
+            }
+        }
+
+        async function loadApartments() {
+            try {
+                const res = await fetch('/api/apartments?limit=200');
+                allApartments = await res.json();
+
+                // Load price drops to identify which apartments have price drops
+                try {
+                    const priceRes = await fetch('/api/price-changes?days=2');
+                    const priceChanges = await priceRes.json();
+                    priceDropApartments = new Set(priceChanges.map(p => p.id));
+                } catch (e) {
+                    console.error('Failed to load price changes:', e);
+                }
+
+                renderApartments();
+            } catch (e) {
+                document.getElementById('apartments-list').innerHTML = '<p>Error loading apartments. Make sure to include API key in headers.</p>';
+            }
+        }
+
+        function renderApartments() {
+            const list = document.getElementById('apartments-list');
+
+            // Apply filter
+            let filtered = [...allApartments];
+            const now = new Date();
+            const twoDaysAgo = new Date(now.getTime() - 48 * 60 * 60 * 1000);
+
+            if (currentFilter === 'new') {
+                // Show apartments from last 48 hours
+                filtered = filtered.filter(apt => {
+                    const firstSeen = new Date(apt.first_seen);
+                    return firstSeen >= twoDaysAgo;
+                });
+            } else if (currentFilter === 'price-drops') {
+                // Show apartments with price drops
+                filtered = filtered.filter(apt => priceDropApartments.has(apt.id));
+            } else if (currentFilter === 'avg-price') {
+                // Show apartments near average price (within 20%)
+                const prices = allApartments.map(a => a.price).filter(p => p > 0);
+                const avgPrice = prices.reduce((a, b) => a + b, 0) / prices.length;
+                const minPrice = avgPrice * 0.8;
+                const maxPrice = avgPrice * 1.2;
+                filtered = filtered.filter(apt => apt.price >= minPrice && apt.price <= maxPrice);
+            }
+            // 'all' filter shows everything
+
+            apartments = filtered;
+
+            if (!apartments.length) {
+                list.innerHTML = '<p>לא נמצאו דירות בפילטר זה</p>';
+                return;
+            }
+
+            const filterText = {
+                'all': `כל הדירות (${apartments.length})`,
+                'new': `דירות חדשות (${apartments.length})`,
+                'price-drops': `דירות עם ירידת מחיר (${apartments.length})`,
+                'avg-price': `דירות במחיר ממוצע (${apartments.length})`
+            };
+
+            list.innerHTML = `<h3 style="margin-bottom: 20px; color: var(--primary);">${filterText[currentFilter]}</h3>` +
+                apartments.map(apt => `
+                    <div class="apartment">
+                        <h3>${apt.title || 'ללא כותרת'}</h3>
+                        <div class="apartment-details">
+                            <div class="detail"><strong>💰 מחיר:</strong> ${(apt.price || 0).toLocaleString()} ₪</div>
+                            <div class="detail"><strong>🛏️ חדרים:</strong> ${apt.rooms || 'N/A'}</div>
+                            <div class="detail"><strong>📐 מ"ר:</strong> ${apt.square_meters || 'N/A'}</div>
+                            <div class="detail"><strong>📍 עיר:</strong> ${apt.city || 'N/A'}</div>
+                            <div class="detail"><strong>🏘️ שכונה:</strong> ${apt.neighborhood || 'N/A'}</div>
+                            <div class="detail"><strong>📅 תאריך:</strong> ${new Date(apt.first_seen).toLocaleDateString('he-IL')}</div>
+                        </div>
+                        ${apt.link ? `<a href="${apt.link}" target="_blank" style="color: var(--primary);">🔗 לינק למודעה</a>` : ''}
+                    </div>
+                `).join('');
+        }
+
+        async function loadChart() {
+            if (!apartments.length) return;
+            const ctx = document.getElementById('chart');
+            const prices = apartments.map(a => a.price).filter(p => p > 0);
+            const avg = prices.reduce((a, b) => a + b, 0) / prices.length;
+            new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: ['Min', 'Avg', 'Max'],
+                    datasets: [{
+                        label: 'Price (₪)',
+                        data: [Math.min(...prices), avg, Math.max(...prices)],
+                        backgroundColor: ['#10b981', '#667eea', '#ef4444']
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false
+                }
+            });
+        }
+
+        const theme = localStorage.getItem('theme') || 'light';
+        document.documentElement.setAttribute('data-theme', theme);
+        document.querySelector('.theme-btn').textContent = theme === 'dark' ? '☀️' : '🌙';
+
+        // Initialize with 'all' filter active
+        document.querySelector('[data-filter="all"]').classList.add('active');
+
+        loadStats();
+        loadApartments();
+        setInterval(loadStats, 60000);
     </script>
 </body>
 </html>'''

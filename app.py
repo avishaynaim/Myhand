@@ -46,8 +46,10 @@ logger = logging.getLogger(__name__)
 def get_database_path():
     """
     Get the database path with persistent storage support.
-    Uses /data directory if it exists (Railway volume mount),
-    otherwise uses current directory.
+
+    For Railway persistent storage:
+    1. Add PostgreSQL database (free, persistent)
+    2. Or add Volume mounted at /data
     """
     # Check for explicit environment variable
     db_path = os.environ.get('DATABASE_PATH')
@@ -58,12 +60,26 @@ def get_database_path():
     data_dir = '/data'
     if os.path.exists(data_dir) and os.path.isdir(data_dir):
         db_file = os.path.join(data_dir, 'yad2_monitor.db')
-        logger.info(f"📁 Using persistent storage: {db_file}")
+        logger.info(f"✅ Using persistent storage: {db_file}")
         return db_file
 
-    # Default to current directory
+    # Check if PostgreSQL is available (Railway provides DATABASE_URL)
+    database_url = os.environ.get('DATABASE_URL')
+    if database_url:
+        logger.warning(f"⚠️  DATABASE_URL detected but SQLite is being used")
+        logger.warning(f"⚠️  For PostgreSQL support, database.py needs to be updated")
+        logger.warning(f"⚠️  Currently using ephemeral SQLite - data will be lost on deploy!")
+
+    # Default to current directory (EPHEMERAL on Railway!)
     db_file = 'yad2_monitor.db'
-    logger.info(f"📁 Using local storage: {db_file}")
+    if 'RAILWAY_ENVIRONMENT' in os.environ:
+        logger.error(f"❌ USING EPHEMERAL STORAGE: {db_file}")
+        logger.error(f"❌ DATA WILL BE DELETED ON EVERY DEPLOYMENT!")
+        logger.error(f"❌ Add PostgreSQL in Railway dashboard to fix this!")
+        logger.error(f"❌ Go to: https://railway.app → New → Database → PostgreSQL")
+    else:
+        logger.info(f"📁 Using local storage: {db_file}")
+
     return db_file
 
 

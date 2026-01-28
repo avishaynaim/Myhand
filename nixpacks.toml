@@ -2,10 +2,21 @@
 nixPkgs = ['python311', 'openssl']
 
 [phases.install]
-cmds = ['pip install -r requirements.txt']
+cmds = [
+  'echo "=== Install Phase ==="',
+  'echo "Working directory: $(pwd)"',
+  'ls -la',
+  'pip install -r requirements.txt'
+]
 
 [phases.build]
-cmds = ['echo "Building with templates and static files..."']
+cmds = [
+  'echo "=== Build Phase ==="',
+  'echo "Checking for templates directory..."',
+  'if [ -d templates ]; then echo "✓ templates exists"; ls -la templates/; else echo "✗ templates NOT FOUND"; fi',
+  'echo "Checking for static directory..."',
+  'if [ -d static ]; then echo "✓ static exists"; find static -type f; else echo "✗ static NOT FOUND"; fi'
+]
 
 [start]
 cmd = 'python app.py'

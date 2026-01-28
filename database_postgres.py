@@ -353,7 +353,7 @@ class PostgreSQLDatabase:
         with self.get_connection() as conn:
             cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
             if active_only:
-                cursor.execute('SELECT * FROM search_urls WHERE active = 1')
+                cursor.execute('SELECT * FROM search_urls WHERE is_active = 1')
             else:
                 cursor.execute('SELECT * FROM search_urls')
             return [dict(row) for row in cursor.fetchall()]

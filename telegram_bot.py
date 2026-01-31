@@ -19,6 +19,7 @@ class TelegramBot:
         self.token = token
         self.db = database
         self.base_url = f"https://api.telegram.org/bot{token}"
+        self.scrape_callback = None  # Set by monitor to allow /scrape command
 
     def set_webhook(self, webhook_url: str) -> bool:
         """Set the webhook URL for receiving updates"""
@@ -145,6 +146,7 @@ class TelegramBot:
             '/pause': self.cmd_pause,
             '/resume': self.cmd_resume,
             '/analytics': self.cmd_analytics,
+            '/scrape': self.cmd_scrape,
         }
 
         handler = command_handlers.get(command)
@@ -175,6 +177,7 @@ class TelegramBot:
 /filter - ניהול פילטרים
 /pause - השהה התראות
 /resume - חידוש התראות
+/scrape - סריקה מיידית של יד2
 /analytics - תובנות שוק
 /help - עזרה
 
@@ -204,6 +207,9 @@ class TelegramBot:
 <b>ניהול התראות:</b>
 /pause - השהה התראות זמנית
 /resume - חידוש התראות
+
+<b>סריקה:</b>
+/scrape - הפעל סריקה מיידית של יד2
 
 <b>💡 דוגמאות שימוש:</b>
 • <code>/search רמת גן</code> - חיפוש בעיר
@@ -417,6 +423,30 @@ class TelegramBot:
         self.send_message(chat_id,
             "▶️ <b>התראות חודשו!</b>\n\n"
             "תתחיל לקבל התראות שוב על דירות חדשות ושינויי מחיר.")
+
+    def cmd_scrape(self, chat_id: str, args: List[str]):
+        """Handle /scrape command - trigger immediate scrape"""
+        if not self.scrape_callback:
+            self.send_message(chat_id, "⚠️ פונקציית הסריקה לא זמינה כרגע.")
+            return
+
+        self.send_message(chat_id, "🔍 <b>מתחיל סריקה מיידית...</b>\nזה עשוי לקחת כמה דקות.")
+
+        try:
+            import threading
+            def run_scrape():
+                try:
+                    new_count, change_count = self.scrape_callback()
+                    self.send_message(chat_id,
+                        f"✅ <b>סריקה הושלמה!</b>\n\n"
+                        f"🆕 דירות חדשות: {new_count}\n"
+                        f"💰 שינויי מחיר: {change_count}")
+                except Exception as e:
+                    self.send_message(chat_id, f"❌ שגיאה בסריקה: {e}")
+
+            threading.Thread(target=run_scrape, daemon=True).start()
+        except Exception as e:
+            self.send_message(chat_id, f"❌ שגיאה: {e}")
 
     def cmd_analytics(self, chat_id: str, args: List[str]):
         """Handle /analytics command"""

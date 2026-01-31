@@ -191,6 +191,7 @@ class Yad2Monitor:
             from telegram_bot import TelegramBot
             self.telegram_bot = TelegramBot(telegram_token, self.db)
             self.telegram_bot.scrape_callback = self.run_once_quick
+            self.telegram_bot.set_my_commands()
             logger.info("✓ Telegram bot initialized (multi-user mode)")
         except Exception as e:
             logger.warning(f"Failed to initialize Telegram bot: {e}")

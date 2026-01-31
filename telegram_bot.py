@@ -21,6 +21,35 @@ class TelegramBot:
         self.base_url = f"https://api.telegram.org/bot{token}"
         self.scrape_callback = None  # Set by monitor to allow /scrape command
 
+    def set_my_commands(self) -> bool:
+        """Register bot commands so they appear in Telegram's menu"""
+        try:
+            url = f"{self.base_url}/setMyCommands"
+            commands = [
+                {"command": "start", "description": "התחלה והרשמה"},
+                {"command": "help", "description": "מדריך שימוש"},
+                {"command": "status", "description": "סטטוס המערכת והמשתמש"},
+                {"command": "stats", "description": "סטטיסטיקות שוק"},
+                {"command": "favorites", "description": "הצג מועדפים"},
+                {"command": "search", "description": "חיפוש דירות"},
+                {"command": "filter", "description": "ניהול פילטרים"},
+                {"command": "pause", "description": "השהה התראות"},
+                {"command": "resume", "description": "חידוש התראות"},
+                {"command": "scrape", "description": "סריקה מיידית של יד2"},
+                {"command": "analytics", "description": "תובנות שוק"},
+            ]
+            response = requests.post(url, json={"commands": commands}, timeout=10)
+            result = response.json()
+            if result.get('ok'):
+                logger.info("✓ Bot commands registered with Telegram")
+                return True
+            else:
+                logger.error(f"Failed to set commands: {result}")
+                return False
+        except Exception as e:
+            logger.error(f"Error setting commands: {e}", exc_info=True)
+            return False
+
     def set_webhook(self, webhook_url: str) -> bool:
         """Set the webhook URL for receiving updates"""
         try:

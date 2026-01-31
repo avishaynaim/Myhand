@@ -190,7 +190,7 @@ class Yad2Monitor:
         try:
             from telegram_bot import TelegramBot
             self.telegram_bot = TelegramBot(telegram_token, self.db)
-            self.telegram_bot.scrape_callback = self.run_once
+            self.telegram_bot.scrape_callback = self.run_once_quick
             logger.info("✓ Telegram bot initialized (multi-user mode)")
         except Exception as e:
             logger.warning(f"Failed to initialize Telegram bot: {e}")
@@ -667,6 +667,27 @@ class Yad2Monitor:
 
         # Check for daily digest time
         self.notifier.check_daily_digest_time()
+
+        return len(all_new), len(all_changes)
+
+    def run_once_quick(self):
+        """Run a single scrape cycle - first page only (for /scrape command)"""
+        all_new = []
+        all_changes = []
+
+        for search in self.search_urls:
+            logger.info(f"📋 Quick scraping (page 1 only): {search['name']}")
+            apartments, pages_saved = self.scrape_all_pages(search['url'], max_pages=1)
+
+            if apartments:
+                new_apts, price_changes, _ = self.process_apartments(apartments)
+                all_new.extend(new_apts)
+                all_changes.extend(price_changes)
+
+                self.db.update_search_url_scraped(search['id'])
+
+        if all_new or all_changes:
+            self.send_notifications(all_new, all_changes)
 
         return len(all_new), len(all_changes)
 

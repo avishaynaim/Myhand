@@ -671,25 +671,21 @@ class Yad2Monitor:
         return len(all_new), len(all_changes)
 
     def run_once_quick(self):
-        """Run a single scrape cycle - first page only (for /scrape command)"""
-        all_new = []
-        all_changes = []
+        """Run a single scrape cycle - first page only (for /scrape command).
+        Returns all scraped apartments (not just new/changed)."""
+        all_apartments = []
 
         for search in self.search_urls:
             logger.info(f"📋 Quick scraping (page 1 only): {search['name']}")
             apartments, pages_saved = self.scrape_all_pages(search['url'], max_pages=1)
 
             if apartments:
-                new_apts, price_changes, _ = self.process_apartments(apartments)
-                all_new.extend(new_apts)
-                all_changes.extend(price_changes)
-
+                all_apartments.extend(apartments)
+                # Still process normally so DB stays updated
+                self.process_apartments(apartments)
                 self.db.update_search_url_scraped(search['id'])
 
-        if all_new or all_changes:
-            self.send_notifications(all_new, all_changes)
-
-        return len(all_new), len(all_changes)
+        return all_apartments
 
     def monitor(self):
         """Main monitoring loop"""

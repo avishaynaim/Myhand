@@ -425,22 +425,48 @@ class TelegramBot:
             "תתחיל לקבל התראות שוב על דירות חדשות ושינויי מחיר.")
 
     def cmd_scrape(self, chat_id: str, args: List[str]):
-        """Handle /scrape command - trigger immediate scrape"""
+        """Handle /scrape command - trigger immediate scrape and send all results"""
         if not self.scrape_callback:
             self.send_message(chat_id, "⚠️ פונקציית הסריקה לא זמינה כרגע.")
             return
 
-        self.send_message(chat_id, "🔍 <b>מתחיל סריקה מיידית...</b>\nזה עשוי לקחת כמה דקות.")
+        self.send_message(chat_id, "🔍 <b>מתחיל סריקה מיידית (עמוד ראשון)...</b>")
 
         try:
             import threading
+            import time as _time
             def run_scrape():
                 try:
-                    new_count, change_count = self.scrape_callback()
+                    apartments = self.scrape_callback()
+
+                    if not apartments:
+                        self.send_message(chat_id, "⚠️ <b>לא נמצאו דירות.</b>\nייתכן שיד2 חוסם את הבקשה.")
+                        return
+
                     self.send_message(chat_id,
-                        f"✅ <b>סריקה הושלמה!</b>\n\n"
-                        f"🆕 דירות חדשות: {new_count}\n"
-                        f"💰 שינויי מחיר: {change_count}")
+                        f"✅ <b>סריקה הושלמה!</b> נמצאו {len(apartments)} דירות.\n"
+                        f"שולח את כולן...")
+
+                    for i, apt in enumerate(apartments):
+                        price = f"₪{apt['price']:,}" if apt.get('price') else 'לא ידוע'
+                        location = apt.get('location', apt.get('street_address', 'לא ידוע'))
+                        info = apt.get('item_info', '')
+                        link = apt.get('link', '')
+
+                        text = (
+                            f"🏠 <b>דירה {i+1}/{len(apartments)}</b>\n\n"
+                            f"📍 <b>מיקום:</b> {location}\n"
+                            f"💰 <b>מחיר:</b> {price}\n"
+                        )
+                        if info:
+                            text += f"ℹ️ <b>פרטים:</b> {info}\n"
+                        if link:
+                            text += f"\n🔗 <a href=\"{link}\">צפייה ביד2</a>"
+
+                        self.send_message(chat_id, text)
+                        if i < len(apartments) - 1:
+                            _time.sleep(0.5)
+
                 except Exception as e:
                     self.send_message(chat_id, f"❌ שגיאה בסריקה: {e}")
 
